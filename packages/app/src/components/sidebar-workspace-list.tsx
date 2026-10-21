@@ -153,6 +153,15 @@ import type { HostBadgeModel } from "@/hosts/appearance";
 import { useHostBadges } from "@/hosts/use-host-badges";
 import { useSidebarRowItems } from "@/components/sidebar/display-preferences/model";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
+import { SidebarSessionTree } from "@/components/sidebar/sidebar-session-row";
+import { useSidebarModel } from "@/components/sidebar/sidebar-model";
+import {
+  workspaceSessionTreeKey,
+  type SidebarSessionRow,
+} from "@/hooks/sidebar-session-tree-view-model";
+import { navigateToAgent } from "@/utils/navigate-to-agent";
+
+const EMPTY_SESSION_ROWS: readonly SidebarSessionRow[] = [];
 
 const workspaceKeyExtractor = (workspace: SidebarWorkspacePlacement) => workspace.workspaceKey;
 
@@ -291,6 +300,9 @@ interface WorkspaceRowInnerProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   reserveIdleStatusIndicatorSpace?: boolean;
+  sessionTreeKey?: string | null;
+  sessionTreeExpanded?: boolean;
+  onToggleSessionTree?: (sessionKey: string) => void;
 }
 
 export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewStyle> }) {
@@ -1078,6 +1090,9 @@ function WorkspaceRowInner({
   isPinned,
   onTogglePin,
   reserveIdleStatusIndicatorSpace = true,
+  sessionTreeKey = null,
+  sessionTreeExpanded = false,
+  onToggleSessionTree,
 }: WorkspaceRowInnerProps) {
   const isCompact = useIsCompactFormFactor();
   const [isPressed, setIsPressed] = useState(false);
@@ -1179,6 +1194,9 @@ function WorkspaceRowInner({
                 shortcutNumber={shortcutNumber}
                 showShortcutBadge={showShortcutBadge}
                 reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
+                sessionTreeKey={sessionTreeKey}
+                sessionTreeExpanded={sessionTreeExpanded}
+                onToggleSessionTree={onToggleSessionTree}
               >
                 <WorkspaceRowRightGroup
                   workspace={workspace}
@@ -1227,6 +1245,9 @@ function WorkspaceRowWithMenu({
   onToggleWorkspacePin,
   reserveIdleStatusIndicatorSpace = true,
   isCreating = false,
+  sessionTreeKey = null,
+  sessionTreeExpanded = false,
+  onToggleSessionTree,
 }: {
   workspace: SidebarWorkspaceEntry;
   hostBadge?: HostBadgeModel | null;
@@ -1244,6 +1265,9 @@ function WorkspaceRowWithMenu({
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   reserveIdleStatusIndicatorSpace?: boolean;
   isCreating?: boolean;
+  sessionTreeKey?: string | null;
+  sessionTreeExpanded?: boolean;
+  onToggleSessionTree?: (sessionKey: string) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -1356,6 +1380,9 @@ function WorkspaceRowWithMenu({
         isPinned={isPinned}
         onTogglePin={onTogglePin}
         reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
+        sessionTreeKey={sessionTreeKey}
+        sessionTreeExpanded={sessionTreeExpanded}
+        onToggleSessionTree={onToggleSessionTree}
       />
       <WorkspaceRenameModal
         visible={isRenameOpen}
@@ -1386,6 +1413,9 @@ interface WorkspaceRowItemProps {
   drag?: () => void;
   isDragging?: boolean;
   dragHandleProps?: DraggableListDragHandleProps;
+  sessionTreeKey?: string | null;
+  sessionTreeExpanded?: boolean;
+  onToggleSessionTree?: (sessionKey: string) => void;
 }
 
 function WorkspaceRowItem({
@@ -1407,6 +1437,9 @@ function WorkspaceRowItem({
   drag,
   isDragging = false,
   dragHandleProps,
+  sessionTreeKey = null,
+  sessionTreeExpanded = false,
+  onToggleSessionTree,
 }: WorkspaceRowItemProps) {
   const handlePress = useCallback(() => {
     if (!workspace.serverId) {
@@ -1439,6 +1472,9 @@ function WorkspaceRowItem({
       drag={drag ?? noop}
       isDragging={isDragging}
       dragHandleProps={dragHandleProps}
+      sessionTreeKey={sessionTreeKey}
+      sessionTreeExpanded={sessionTreeExpanded}
+      onToggleSessionTree={onToggleSessionTree}
     />
   );
 }
@@ -1476,6 +1512,9 @@ function areWorkspaceRowItemPropsEqual(
     previous.drag === next.drag &&
     previous.isDragging === next.isDragging &&
     previous.dragHandleProps === next.dragHandleProps &&
+    previous.sessionTreeKey === next.sessionTreeKey &&
+    previous.sessionTreeExpanded === next.sessionTreeExpanded &&
+    previous.onToggleSessionTree === next.onToggleSessionTree &&
     previousSelected === nextSelected
   );
 }
@@ -1499,6 +1538,9 @@ function WorkspaceRow({
   reserveIdleStatusIndicatorSpace = true,
   isCreating = false,
   selected,
+  sessionTreeKey = null,
+  sessionTreeExpanded = false,
+  onToggleSessionTree,
 }: {
   workspaceEntry: SidebarWorkspaceEntry | null;
   hostBadge?: HostBadgeModel | null;
@@ -1516,6 +1558,9 @@ function WorkspaceRow({
   reserveIdleStatusIndicatorSpace?: boolean;
   isCreating?: boolean;
   selected: boolean;
+  sessionTreeKey?: string | null;
+  sessionTreeExpanded?: boolean;
+  onToggleSessionTree?: (sessionKey: string) => void;
 }) {
   if (!workspaceEntry) {
     return null;
@@ -1539,6 +1584,9 @@ function WorkspaceRow({
       onToggleWorkspacePin={onToggleWorkspacePin}
       reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
       isCreating={isCreating}
+      sessionTreeKey={sessionTreeKey}
+      sessionTreeExpanded={sessionTreeExpanded}
+      onToggleSessionTree={onToggleSessionTree}
     />
   );
 }
@@ -1568,9 +1616,17 @@ function ProjectBlock({
   supportsMultiplicityByServerId,
   supportsPinningByServerId,
   onToggleWorkspacePin,
+  sessionRowsByWorkspaceKey,
+  expandedSessionKeys,
+  onToggleSessionExpanded,
+  onOpenSession,
 }: {
   project: SidebarProjectEntry;
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  expandedSessionKeys: ReadonlySet<string>;
+  onToggleSessionExpanded: (sessionKey: string) => void;
+  onOpenSession: (row: SidebarSessionRow) => void;
   collapsed: boolean;
   displayName: string;
   iconDataUri: string | null;
@@ -1636,24 +1692,43 @@ function ProjectBlock({
         dragHandleProps?: DraggableListDragHandleProps;
       },
     ) => {
+      const workspaceEntry = workspaceEntriesByKey.get(item.workspaceKey) ?? null;
+      const sessionRows = sessionRowsByWorkspaceKey.get(item.workspaceKey) ?? EMPTY_SESSION_ROWS;
+      const sessionTreeKey =
+        workspaceEntry && sessionRows.length > 0
+          ? workspaceSessionTreeKey(item.workspaceKey)
+          : null;
       return (
-        <MemoWorkspaceRowItem
-          workspace={item}
-          workspaceEntry={workspaceEntriesByKey.get(item.workspaceKey) ?? null}
-          hostBadge={hostBadgeByServerId.get(item.serverId) ?? null}
-          shortcutNumber={shortcutIndexByWorkspaceKey.get(item.workspaceKey) ?? null}
-          showShortcutBadge={showShortcutBadges}
-          canCopyBranchName={project.projectKind === "git"}
-          canPin={supportsPinningByServerId.get(item.serverId) === true}
-          onToggleWorkspacePin={onToggleWorkspacePin}
-          isCreating={creatingWorkspaceIds.has(item.workspaceId)}
-          selectionEnabled={selectionEnabled}
-          activeWorkspaceSelection={activeWorkspaceSelection}
-          onWorkspacePress={onWorkspacePress}
-          drag={input?.drag}
-          isDragging={input?.isDragging}
-          dragHandleProps={input?.dragHandleProps}
-        />
+        <View>
+          <MemoWorkspaceRowItem
+            workspace={item}
+            workspaceEntry={workspaceEntry}
+            hostBadge={hostBadgeByServerId.get(item.serverId) ?? null}
+            shortcutNumber={shortcutIndexByWorkspaceKey.get(item.workspaceKey) ?? null}
+            showShortcutBadge={showShortcutBadges}
+            canCopyBranchName={project.projectKind === "git"}
+            canPin={supportsPinningByServerId.get(item.serverId) === true}
+            onToggleWorkspacePin={onToggleWorkspacePin}
+            isCreating={creatingWorkspaceIds.has(item.workspaceId)}
+            selectionEnabled={selectionEnabled}
+            activeWorkspaceSelection={activeWorkspaceSelection}
+            onWorkspacePress={onWorkspacePress}
+            drag={input?.drag}
+            isDragging={input?.isDragging}
+            dragHandleProps={input?.dragHandleProps}
+            sessionTreeKey={sessionTreeKey}
+            sessionTreeExpanded={sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey)}
+            onToggleSessionTree={onToggleSessionExpanded}
+          />
+          {sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey) ? (
+            <SidebarSessionTree
+              rows={sessionRows}
+              expandedSessionKeys={expandedSessionKeys}
+              onToggleSessionExpanded={onToggleSessionExpanded}
+              onOpenSession={onOpenSession}
+            />
+          ) : null}
+        </View>
       );
     },
     [
@@ -1662,9 +1737,13 @@ function ProjectBlock({
       supportsPinningByServerId,
       activeWorkspaceSelection,
       creatingWorkspaceIds,
+      expandedSessionKeys,
       hostBadgeByServerId,
+      onOpenSession,
+      onToggleSessionExpanded,
       onWorkspacePress,
       selectionEnabled,
+      sessionRowsByWorkspaceKey,
       shortcutIndexByWorkspaceKey,
       showShortcutBadges,
       workspaceEntriesByKey,
@@ -1856,6 +1935,10 @@ function areProjectBlockPropsEqual(previous: ProjectBlockProps, next: ProjectBlo
     previous.useNestable === next.useNestable &&
     previous.dragGestureHostActive === next.dragGestureHostActive &&
     previous.creatingWorkspaceIds === next.creatingWorkspaceIds &&
+    previous.sessionRowsByWorkspaceKey === next.sessionRowsByWorkspaceKey &&
+    previous.expandedSessionKeys === next.expandedSessionKeys &&
+    previous.onToggleSessionExpanded === next.onToggleSessionExpanded &&
+    previous.onOpenSession === next.onOpenSession &&
     previous.activeWorkspaceSelection?.serverId === next.activeWorkspaceSelection?.serverId &&
     areProjectBlockSelectionsEqual(previous, next)
   );
@@ -1914,6 +1997,8 @@ export function SidebarWorkspaceList({
   const pathname = usePathname();
   const hosts = useHosts();
   const rowItems = useSidebarRowItems();
+  const { sessionRowsByWorkspaceKey, expandedSessionKeys, toggleSessionExpanded } =
+    useSidebarModel();
   // Host badge visibility is a lattice, not three competing switches: this gate is the global
   // "off", `shouldShowSidebarHostLabels` is the automatic "there is only one host so it says
   // nothing", and each host's own `badgeDisplay` decides name vs icon vs hidden. Turning the
@@ -1989,6 +2074,9 @@ export function SidebarWorkspaceList({
         projects={projects}
         pinnedGroups={pinnedGroups}
         workspaceEntriesByKey={workspaceEntriesByKey}
+        sessionRowsByWorkspaceKey={sessionRowsByWorkspaceKey}
+        expandedSessionKeys={expandedSessionKeys}
+        onToggleSessionExpanded={toggleSessionExpanded}
         projectIconByProjectViewKey={projectIconByProjectViewKey}
         collapsedProjectKeys={collapsedProjectKeys}
         onToggleProjectCollapsed={onToggleProjectCollapsed}
@@ -2085,6 +2173,9 @@ function ProjectModeList({
   projects,
   pinnedGroups,
   workspaceEntriesByKey,
+  sessionRowsByWorkspaceKey,
+  expandedSessionKeys,
+  onToggleSessionExpanded,
   projectIconByProjectViewKey,
   collapsedProjectKeys,
   onToggleProjectCollapsed,
@@ -2115,6 +2206,9 @@ function ProjectModeList({
 > & {
   /** Swaps the list body for the label filter's empty state. Never the header above it. */
   sidebarFilterEmpty: boolean;
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  expandedSessionKeys: ReadonlySet<string>;
+  onToggleSessionExpanded: (sessionKey: string) => void;
   projectIconByProjectViewKey: ReadonlyMap<string, string | null>;
   pathname: string;
   hostBadgeByServerId: ReadonlyMap<string, HostBadgeModel>;
@@ -2286,6 +2380,18 @@ function ProjectModeList({
     );
   }, []);
 
+  const handleOpenSession = useCallback(
+    (row: SidebarSessionRow) => {
+      onWorkspacePress?.();
+      navigateToAgent({
+        serverId: row.serverId,
+        agentId: row.agentId,
+        workspaceId: row.workspaceId,
+      });
+    },
+    [onWorkspacePress],
+  );
+
   const renderProjectBlock = useCallback(
     (
       item: SidebarProjectEntry,
@@ -2322,15 +2428,23 @@ function ProjectModeList({
           supportsMultiplicityByServerId={supportsMultiplicityByServerId}
           supportsPinningByServerId={supportsPinningByServerId}
           onToggleWorkspacePin={onToggleWorkspacePin}
+          sessionRowsByWorkspaceKey={sessionRowsByWorkspaceKey}
+          expandedSessionKeys={expandedSessionKeys}
+          onToggleSessionExpanded={onToggleSessionExpanded}
+          onOpenSession={handleOpenSession}
         />
       );
     },
     [
       collapsedProjectKeys,
       activeWorkspaceSelection,
+      expandedSessionKeys,
+      handleOpenSession,
       handleWorktreeCreated,
       handleWorkspaceReorder,
       hostBadgeByServerId,
+      onToggleSessionExpanded,
+      sessionRowsByWorkspaceKey,
       supportsMultiplicityByServerId,
       supportsPinningByServerId,
       onToggleWorkspacePin,
@@ -2360,36 +2474,60 @@ function ProjectModeList({
       isActive,
       dragHandleProps,
     }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) => {
+      const workspaceEntry = workspaceEntriesByKey.get(workspace.workspaceKey) ?? null;
+      const sessionRows =
+        sessionRowsByWorkspaceKey.get(workspace.workspaceKey) ?? EMPTY_SESSION_ROWS;
+      const sessionTreeKey =
+        workspaceEntry && sessionRows.length > 0
+          ? workspaceSessionTreeKey(workspace.workspaceKey)
+          : null;
       return (
-        <MemoWorkspaceRowItem
-          workspace={workspace}
-          workspaceEntry={workspaceEntriesByKey.get(workspace.workspaceKey) ?? null}
-          hostBadge={hostBadgeByServerId.get(workspace.serverId) ?? null}
-          leadingProjectName={workspace.projectName}
-          leadingProjectIconDataUri={
-            projectIconByProjectViewKey.get(workspace.projectViewKey) ?? null
-          }
-          shortcutNumber={shortcutIndexByWorkspaceKey.get(workspace.workspaceKey) ?? null}
-          showShortcutBadge={showShortcutBadges}
-          canCopyBranchName={workspace.projectKind === "git"}
-          canPin={supportsPinningByServerId.get(workspace.serverId) === true}
-          onToggleWorkspacePin={onToggleWorkspacePin}
-          isCreating={creatingWorkspaceIds.has(workspace.workspaceId)}
-          selectionEnabled={selectionEnabled}
-          activeWorkspaceSelection={activeWorkspaceSelection}
-          onWorkspacePress={onWorkspacePress}
-          drag={drag}
-          isDragging={isActive}
-          dragHandleProps={dragHandleProps}
-        />
+        <View>
+          <MemoWorkspaceRowItem
+            workspace={workspace}
+            workspaceEntry={workspaceEntry}
+            hostBadge={hostBadgeByServerId.get(workspace.serverId) ?? null}
+            leadingProjectName={workspace.projectName}
+            leadingProjectIconDataUri={
+              projectIconByProjectViewKey.get(workspace.projectViewKey) ?? null
+            }
+            shortcutNumber={shortcutIndexByWorkspaceKey.get(workspace.workspaceKey) ?? null}
+            showShortcutBadge={showShortcutBadges}
+            canCopyBranchName={workspace.projectKind === "git"}
+            canPin={supportsPinningByServerId.get(workspace.serverId) === true}
+            onToggleWorkspacePin={onToggleWorkspacePin}
+            isCreating={creatingWorkspaceIds.has(workspace.workspaceId)}
+            selectionEnabled={selectionEnabled}
+            activeWorkspaceSelection={activeWorkspaceSelection}
+            onWorkspacePress={onWorkspacePress}
+            drag={drag}
+            isDragging={isActive}
+            dragHandleProps={dragHandleProps}
+            sessionTreeKey={sessionTreeKey}
+            sessionTreeExpanded={sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey)}
+            onToggleSessionTree={onToggleSessionExpanded}
+          />
+          {sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey) ? (
+            <SidebarSessionTree
+              rows={sessionRows}
+              expandedSessionKeys={expandedSessionKeys}
+              onToggleSessionExpanded={onToggleSessionExpanded}
+              onOpenSession={handleOpenSession}
+            />
+          ) : null}
+        </View>
       );
     },
     [
       activeWorkspaceSelection,
       creatingWorkspaceIds,
+      expandedSessionKeys,
+      handleOpenSession,
       hostBadgeByServerId,
+      onToggleSessionExpanded,
       onWorkspacePress,
       selectionEnabled,
+      sessionRowsByWorkspaceKey,
       shortcutIndexByWorkspaceKey,
       showShortcutBadges,
       supportsPinningByServerId,

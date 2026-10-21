@@ -1157,6 +1157,10 @@ export const ko: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "서브에이전트 펼치기",
+      collapse: "서브에이전트 접기",
+    },
     statusGroupAccessibility: "{{label}} 그룹",
     statusBucket: {
       needsInput: "입력 필요",

@@ -1,7 +1,16 @@
 import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
-import { Text, View, type ViewStyle } from "react-native";
+import { useTranslation } from "react-i18next";
+import { Text, View, type GestureResponderEvent, type ViewStyle } from "react-native";
+import { PressHighlight } from "@/components/ui/press-highlight";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import {
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  Folder,
+  FolderGit2,
+  Monitor,
+} from "lucide-react-native";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
@@ -36,8 +45,13 @@ const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
+const mutedIconColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
+const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedChevronRight = withUnistyles(ChevronRight);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
@@ -98,6 +112,9 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
+  sessionTreeKey = null,
+  sessionTreeExpanded = false,
+  onToggleSessionTree,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
@@ -115,8 +132,18 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   showShortcutBadge?: boolean;
   /** Keep the empty leading slot when the workspace has no active status. */
   reserveIdleStatusIndicatorSpace?: boolean;
+  /** Non-null when this workspace has child sessions; carries the persisted expansion key. */
+  sessionTreeKey?: string | null;
+  sessionTreeExpanded?: boolean;
+  onToggleSessionTree?: (sessionKey: string) => void;
   children?: ReactNode;
 }) {
+  const { t } = useTranslation();
+  const handleToggleSessionTree = useCallback(() => {
+    if (sessionTreeKey !== null) {
+      onToggleSessionTree?.(sessionTreeKey);
+    }
+  }, [onToggleSessionTree, sessionTreeKey]);
   const {
     settings: { workspaceTitleSource },
   } = useAppSettings();
@@ -156,6 +183,18 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
         )}
         <View style={styles.workspaceContentColumn}>
           <View style={styles.workspaceTitleRow}>
+            {sessionTreeKey !== null && onToggleSessionTree ? (
+              <SidebarTreeToggle
+                expanded={sessionTreeExpanded}
+                onToggle={handleToggleSessionTree}
+                accessibilityLabel={t(
+                  sessionTreeExpanded
+                    ? "sidebar.sessionTree.collapse"
+                    : "sidebar.sessionTree.expand",
+                )}
+                testID={`sidebar-session-tree-toggle-${workspace.workspaceKey}`}
+              />
+            ) : null}
             <Text style={workspaceBranchTextStyle} numberOfLines={1}>
               {workspaceLabel}
             </Text>
@@ -249,6 +288,96 @@ function WorkspaceStatusIndicator({
     <View style={styles.workspaceStatusDot} testID={`workspace-status-indicator-${bucket}`}>
       <DensityIcon icon={KindIcon} size="sm" color="foregroundMuted" />
       {dotColorStyle ? <StatusDotOverlay dotColorStyle={dotColorStyle} /> : null}
+    </View>
+  );
+}
+
+/**
+ * The expand/collapse control for a session row that has children.
+ *
+ * It sits inside the row's pressable, so press events are stopped here — toggling the tree must
+ * not also open the workspace or the agent.
+ */
+export function SidebarTreeToggle({
+  expanded,
+  onToggle,
+  accessibilityLabel,
+  testID,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  accessibilityLabel: string;
+  testID: string;
+}) {
+  const handlePressIn = useCallback((event: GestureResponderEvent) => {
+    event.stopPropagation();
+  }, []);
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      onToggle();
+    },
+    [onToggle],
+  );
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+
+  return (
+    <PressHighlight
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={accessibilityState}
+      hitSlop={6}
+      onPressIn={handlePressIn}
+      onPress={handlePress}
+      style={styles.treeToggle}
+      testID={testID}
+    >
+      {expanded ? (
+        <ThemedChevronDown size={14} uniProps={mutedIconColorMapping} />
+      ) : (
+        <ThemedChevronRight size={14} uniProps={mutedIconColorMapping} />
+      )}
+    </PressHighlight>
+  );
+}
+
+/** Status mark for a child-session row. Same buckets as a workspace row, without the kind icon. */
+export function SidebarAgentStatusIndicator({ bucket }: { bucket: SidebarStateBucket }) {
+  if (bucket === "running") {
+    return (
+      <View style={styles.workspaceStatusDot} testID="sidebar-agent-status-running">
+        <StatusRing />
+      </View>
+    );
+  }
+
+  if (bucket === "needs_input") {
+    return (
+      <View style={styles.workspaceStatusDot} testID="sidebar-agent-status-needs_input">
+        <ThemedCircleAlert size={STATUS_INDICATOR_ALERT_SIZE} uniProps={needsInputColorMapping} />
+      </View>
+    );
+  }
+
+  if (bucket === "attention") {
+    return (
+      <View style={styles.workspaceStatusDot} testID="sidebar-agent-status-attention">
+        <View style={styles.standaloneStatusDot} />
+      </View>
+    );
+  }
+
+  if (bucket === "failed") {
+    return (
+      <View style={styles.workspaceStatusDot} testID="sidebar-agent-status-failed">
+        <View style={styles.failedStatusDot} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.workspaceStatusDot} testID="sidebar-agent-status-done">
+      <View style={styles.idleStatusDot} />
     </View>
   );
 }
@@ -481,6 +610,17 @@ const styles = StyleSheet.create((theme) => ({
     top: 1,
     right: 0,
   },
+  // Sits in the title row before the label, so a row with a subtree carries its disclosure on the
+  // same line as its name. The negative margin keeps that control from pushing the label off the
+  // rail the rows without children sit on.
+  treeToggle: {
+    width: 16,
+    height: TITLE_LINE_HEIGHT,
+    marginLeft: -theme.spacing[1],
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
   workspaceStatusDot: {
     position: "relative",
     width: densityIconBox("md"),
@@ -511,6 +651,12 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundExtraMuted,
     opacity: 0.3,
+  },
+  failedStatusDot: {
+    width: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    height: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: getStatusDotColor({ theme, bucket: "failed" }) ?? undefined,
   },
   // The title owns the first line outright now that the host, change request and CI moved
   // to the meta row, so it takes the full width the trailing slot leaves behind.

@@ -1163,6 +1163,10 @@ export const ja: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "サブエージェントを展開",
+      collapse: "サブエージェントを折りたたむ",
+    },
     statusGroupAccessibility: "{{label}} グループ",
     statusBucket: {
       needsInput: "入力待ち",

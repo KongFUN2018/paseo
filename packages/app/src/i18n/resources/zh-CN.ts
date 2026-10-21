@@ -1142,6 +1142,10 @@ export const zhCN: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "展开子会话",
+      collapse: "收起子会话",
+    },
     statusGroupAccessibility: "{{label}} 分组",
     statusBucket: {
       needsInput: "需要输入",

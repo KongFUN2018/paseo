@@ -1158,6 +1158,10 @@ export const en = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "Expand subagents",
+      collapse: "Collapse subagents",
+    },
     statusGroupAccessibility: "{{label}} group",
     statusBucket: {
       needsInput: "Needs input",

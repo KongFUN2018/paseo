@@ -1176,6 +1176,10 @@ export const ptBR: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "Expandir subagentes",
+      collapse: "Recolher subagentes",
+    },
     statusGroupAccessibility: "Grupo {{label}}",
     statusBucket: {
       needsInput: "Precisa de resposta",

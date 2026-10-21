@@ -1167,6 +1167,10 @@ export const ru: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "Развернуть субагентов",
+      collapse: "Свернуть субагентов",
+    },
     statusGroupAccessibility: "Группа «{{label}}»",
     statusBucket: {
       needsInput: "Ожидает ввода",

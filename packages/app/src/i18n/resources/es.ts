@@ -1186,6 +1186,10 @@ export const es: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "Expandir subagentes",
+      collapse: "Contraer subagentes",
+    },
     statusGroupAccessibility: "Grupo {{label}}",
     statusBucket: {
       needsInput: "Necesita datos",

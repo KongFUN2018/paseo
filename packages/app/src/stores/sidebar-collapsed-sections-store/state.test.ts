@@ -6,6 +6,7 @@ import {
   setProjectCollapsed,
   togglePinnedCollapsed,
   toggleProjectCollapsed,
+  toggleSessionExpanded,
   toggleWorkspaceGroupCollapsed,
 } from "@/stores/sidebar-collapsed-sections-store/state";
 
@@ -14,6 +15,7 @@ function emptyState(): CollapsedProjectsState {
     collapsedProjectKeys: new Set(),
     collapsedWorkspaceGroupKeys: new Set(),
     collapsedPinned: false,
+    expandedSessionKeys: new Set(),
   };
 }
 
@@ -35,13 +37,29 @@ describe("sidebar collapsed projects transitions", () => {
       collapsedProjectKeys: new Set(["project-a", "project-b"]),
       collapsedWorkspaceGroupKeys: new Set(["running"]),
       collapsedPinned: true,
+      expandedSessionKeys: new Set(["server:agent"]),
     };
 
     expect(serializeCollapsedProjects(state)).toEqual({
       collapsedProjectKeys: ["project-a", "project-b"],
       collapsedWorkspaceGroupKeys: ["running"],
       collapsedPinned: true,
+      expandedSessionKeys: ["server:agent"],
     });
+  });
+
+  it("toggles session expansion and restores it from storage", () => {
+    const expanded = toggleSessionExpanded(emptyState(), "server:agent");
+    expect(Array.from(expanded.expandedSessionKeys)).toEqual(["server:agent"]);
+
+    const collapsed = toggleSessionExpanded(expanded, "server:agent");
+    expect(collapsed.expandedSessionKeys.size).toBe(0);
+
+    const restored = mergePersistedCollapsedProjects(
+      { expandedSessionKeys: ["server:agent"] },
+      emptyState(),
+    );
+    expect(Array.from(restored.expandedSessionKeys)).toEqual(["server:agent"]);
   });
 
   it("toggles and restores the pinned section collapse flag", () => {

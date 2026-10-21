@@ -1150,6 +1150,10 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    sessionTree: {
+      expand: "توسيع الوكلاء الفرعيين",
+      collapse: "طي الوكلاء الفرعيين",
+    },
     statusGroupAccessibility: "مجموعة {{label}}",
     statusBucket: {
       needsInput: "تحتاج إدخالاً",

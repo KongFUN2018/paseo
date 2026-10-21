@@ -7,6 +7,8 @@ import {
   type SidebarWorkspacesListResult,
 } from "@/hooks/use-sidebar-workspaces-list";
 import { useSidebarWorkspaceEntries } from "@/hooks/use-sidebar-workspace-entries";
+import { useSidebarSessionRows } from "@/hooks/use-sidebar-session-tree";
+import type { SidebarSessionRow } from "@/hooks/sidebar-session-tree-view-model";
 import { usePinnedSidebarKeys, type PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import {
@@ -27,6 +29,11 @@ import {
 
 interface SidebarModel extends SidebarWorkspacesListResult {
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
+  /** Child-session trees keyed by `${serverId}:${workspaceId}`. Empty when no agent has a parent. */
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  /** Session rows whose tree is open. Absent means collapsed, the default. */
+  expandedSessionKeys: ReadonlySet<string>;
+  toggleSessionExpanded: (sessionKey: string) => void;
   /**
    * Every project the sidebar could show, before any filter narrows it.
    *
@@ -74,6 +81,12 @@ export function SidebarModelProvider({
   const toggleProjectCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleProjectCollapsed,
   );
+  const expandedSessionKeys = useSidebarCollapsedSectionsStore(
+    (state) => state.expandedSessionKeys,
+  );
+  const toggleSessionExpanded = useSidebarCollapsedSectionsStore(
+    (state) => state.toggleSessionExpanded,
+  );
   const availableLabelNames = useMemo(
     () => labelHosts.flatMap((host) => host.labels.map((label) => label.name)),
     [labelHosts],
@@ -102,6 +115,11 @@ export function SidebarModelProvider({
   const workspaceEntriesByKey = useSidebarWorkspaceEntries(
     list.workspacePlacements,
     active !== false || needsWorkspaceEntries,
+  );
+  // Same gate as the entries: a retained-but-hidden sidebar must not walk every host's agents.
+  const sessionRowsByWorkspaceKey = useSidebarSessionRows(
+    list.workspacePlacements,
+    active !== false,
   );
   const filteredWorkspaceEntriesByKey = useMemo(() => {
     const byProject = filterWorkspacesByProjects({
@@ -183,6 +201,9 @@ export function SidebarModelProvider({
       resolvedProjectFilters,
       hasProjectsBeforeFilter: list.projects.length > 0,
       workspaceEntriesByKey: filteredWorkspaceEntriesByKey,
+      sessionRowsByWorkspaceKey,
+      expandedSessionKeys,
+      toggleSessionExpanded,
       groupMode,
       workspaceGroups: projection.workspaceGroups,
       projectIconTargets: projection.projectIconTargets,
@@ -194,11 +215,14 @@ export function SidebarModelProvider({
     [
       resolvedProjectFilters,
       collapsedProjectKeys,
+      expandedSessionKeys,
       groupMode,
       list,
       filteredProjects,
       projection,
+      sessionRowsByWorkspaceKey,
       toggleProjectCollapsed,
+      toggleSessionExpanded,
       filteredWorkspaceEntriesByKey,
     ],
   );
