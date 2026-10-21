@@ -227,6 +227,30 @@ describe("RoomScheduler pause and resume", () => {
     expect(record.turn.deadlineAt).toBe("2026-10-21T10:25:00.000Z");
   });
 
+  test("a late turn event does not advance a paused room", () => {
+    const { record, results } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "user_pause", at: AT },
+      complete("member_1"),
+    ]);
+
+    expect(results[3]?.commands).toEqual([]);
+    expect(record.status).toBe("interrupted");
+    expect(record.turn.memberId).toBe("member_1");
+  });
+
+  test("pausing during a retry cancels the in-flight prompt", () => {
+    const { results } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "member_turn_failed", at: AT, memberId: "member_1", reason: "boom" },
+      { type: "user_pause", at: AT },
+    ]);
+
+    expect(results[3]?.commands).toEqual([{ type: "cancel_agent", memberId: "member_1" }]);
+  });
+
   test("an interjection during an interruption does not ask the moderator", () => {
     const { results } = run(makeRecord(), [
       { type: "room_started", at: AT },

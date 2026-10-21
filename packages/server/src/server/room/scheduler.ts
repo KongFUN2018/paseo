@@ -300,12 +300,12 @@ function handleInterjectionQueued(
   });
   record.updatedAt = event.at;
   // Never interrupt the current speaker; the moderator decides at the next checkpoint.
-  // Interjections queue only while the room is interrupted; that is not a checkpoint.
-  if (record.status === "discussing" && record.turn.status === "idle") {
-    record.pendingCheckpoint = "interjection";
-    return [{ type: "ask_moderator", checkpoint: "interjection" }];
+  // An interrupted or closed room has no checkpoint to decide at.
+  if (record.status !== "discussing" || record.turn.status !== "idle") {
+    return [];
   }
-  return [];
+  record.pendingCheckpoint = "interjection";
+  return [{ type: "ask_moderator", checkpoint: "interjection" }];
 }
 
 function handleResume(
@@ -317,8 +317,7 @@ function handleResume(
   record.updatedAt = event.at;
   const interruptedMemberId = record.turn.status === "idle" ? null : record.turn.memberId;
   // A resumed turn is a fresh turn: reset the attempt counter, then re-prompt the
-  // interrupted speaker. It never left the round queue, so it is not in
-  // remainingMemberIds anymore.
+  // interrupted speaker with a new deadline.
   record.turn = {
     index: record.turn.index,
     memberId: null,
@@ -412,16 +411,20 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
     }
 
     case "member_turn_completed": {
+      // A late turn event from a cancelled run must not advance a paused or closed room.
+      if (next.status !== "discussing") break;
       commands.push(...handleTurnCompleted(next, event));
       break;
     }
 
     case "member_turn_failed": {
+      if (next.status !== "discussing") break;
       commands.push(...handleFailure(next, event.at, event.memberId, event.reason));
       break;
     }
 
     case "turn_timeout": {
+      if (next.status !== "discussing") break;
       const memberId = next.turn.memberId;
       if (!memberId) break;
       commands.push({ type: "cancel_agent", memberId });
@@ -442,7 +445,8 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
     case "user_pause": {
       next.status = "interrupted";
       next.updatedAt = event.at;
-      if (next.turn.status === "speaking" && next.turn.memberId) {
+      // A retrying member also has an in-flight prompt.
+      if (next.turn.status !== "idle" && next.turn.memberId) {
         commands.push({ type: "cancel_agent", memberId: next.turn.memberId });
       }
       break;
@@ -454,7 +458,7 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
     }
 
     case "user_close": {
-      if (next.turn.status === "speaking" && next.turn.memberId) {
+      if (next.turn.status !== "idle" && next.turn.memberId) {
         commands.push({ type: "cancel_agent", memberId: next.turn.memberId });
       }
       commands.push(...beginClosing(next, event.at, null));
