@@ -53,6 +53,25 @@ const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
 
+/**
+ * Hover state for a sidebar row, on the canonical pattern in `docs/hover.md`: a plain View carries
+ * the pointer handlers and the row's pressable stays separate. Native never dispatches pointer
+ * events, so hover-only affordances must also check `isNative || isCompact` at their call site.
+ */
+export function useSidebarRowHover(disabled = false): {
+  isHovered: boolean;
+  hoverHandlers: { onPointerEnter: () => void; onPointerLeave: () => void };
+} {
+  const [isHovered, setIsHovered] = useState(false);
+  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
+  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const hoverHandlers = useMemo(
+    () => ({ onPointerEnter: handlePointerEnter, onPointerLeave: handlePointerLeave }),
+    [handlePointerEnter, handlePointerLeave],
+  );
+  return { isHovered: isHovered && !disabled, hoverHandlers };
+}
+
 export function SidebarWorkspaceRowFrame({
   workspace,
   isDragging = false,
@@ -67,20 +86,11 @@ export function SidebarWorkspaceRowFrame({
     hoverHandlers: { onPointerEnter: () => void; onPointerLeave: () => void };
   }) => ReactNode;
 }) {
-  const [isHovered, setIsHovered] = useState(false);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
-  const handlePointerEnter = useCallback(() => {
-    if (!contextMenuOpen) setIsHovered(true);
-  }, [contextMenuOpen]);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const { isHovered, hoverHandlers } = useSidebarRowHover(contextMenuOpen || isDragging);
   const handleContextMenuOpenChange = useCallback((open: boolean) => {
     setContextMenuOpen(open);
-    if (open) setIsHovered(false);
   }, []);
-  const hoverHandlers = useMemo(
-    () => ({ onPointerEnter: handlePointerEnter, onPointerLeave: handlePointerLeave }),
-    [handlePointerEnter, handlePointerLeave],
-  );
 
   return (
     <WorkspaceHoverCard
@@ -90,7 +100,7 @@ export function SidebarWorkspaceRowFrame({
       disabled={contextMenuOpen}
     >
       {children({
-        isHovered: isHovered && !contextMenuOpen && !isDragging,
+        isHovered,
         contextMenuOpen,
         onContextMenuOpenChange: handleContextMenuOpenChange,
         hoverHandlers,

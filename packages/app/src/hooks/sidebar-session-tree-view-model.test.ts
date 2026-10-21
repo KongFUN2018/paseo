@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@/stores/session-store";
-import { buildSidebarSessionRowsByWorkspace } from "./sidebar-session-tree-view-model";
+import {
+  agentSessionTreeKey,
+  buildSidebarSessionRowsByWorkspace,
+  workspaceSessionTreeKey,
+} from "./sidebar-session-tree-view-model";
 
 const SERVER_ID = "server-1";
 const WORKSPACE_ID = "workspace-1";
@@ -68,17 +72,18 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
     ]);
 
     const workspaceRows = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`);
-    expect(workspaceRows?.map((row) => row.agentId)).toEqual(["child"]);
-    expect(workspaceRows?.[0]?.children.map((row) => row.agentId)).toEqual(["grandchild"]);
-    expect(workspaceRows?.[0]?.key).toBe(`agent:${SERVER_ID}:child`);
-    expect(workspaceRows?.[0]?.workspaceKey).toBe(`${SERVER_ID}:${WORKSPACE_ID}`);
+    expect(workspaceRows?.childRows.map((row) => row.agentId)).toEqual(["child"]);
+    expect(workspaceRows?.childRows[0]?.children.map((row) => row.agentId)).toEqual(["grandchild"]);
+    expect(workspaceRows?.rootRows).toEqual([]);
+    expect(workspaceRows?.childRows[0]?.key).toBe(`agent:${SERVER_ID}:child`);
+    expect(workspaceRows?.childRows[0]?.workspaceKey).toBe(`${SERVER_ID}:${WORKSPACE_ID}`);
   });
 
   it("keeps workspace root sessions out of the tree", () => {
     expect(build([makeAgent({ id: "root" })]).size).toBe(0);
   });
 
-  it("skips archived agents, including archived parents", () => {
+  it("shows an archived parent's child as a root row, at the same level as a root session", () => {
     const archivedParent = makeAgent({
       id: "parent",
       archivedAt: new Date("2026-03-08T10:05:00.000Z"),
@@ -90,17 +95,20 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
     ]);
 
     const workspaceRows = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`);
-    expect(workspaceRows?.map((row) => row.agentId)).toEqual(["orphan"]);
-    expect(workspaceRows?.[0]?.children).toEqual([]);
+    expect(workspaceRows?.rootRows.map((row) => row.agentId)).toEqual(["orphan"]);
+    expect(workspaceRows?.childRows).toEqual([]);
+    expect(workspaceRows?.rootRows[0]?.children).toEqual([]);
   });
 
-  it("shows a missing-parent child as a root row instead of dropping it", () => {
+  it("treats a missing parent the same as an archived one", () => {
     const rows = build([makeAgent({ id: "orphan", parentAgentId: "not-loaded" })]);
 
-    expect(rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)?.map((row) => row.agentId)).toEqual(["orphan"]);
+    expect(rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)?.rootRows.map((row) => row.agentId)).toEqual([
+      "orphan",
+    ]);
   });
 
-  it("does not nest across workspaces", () => {
+  it("does not nest across workspaces and keeps the child as a root row", () => {
     const rows = build([
       makeAgent({ id: "parent", workspaceId: WORKSPACE_ID }),
       makeAgent({
@@ -111,12 +119,12 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
     ]);
 
     expect(rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)).toBeUndefined();
-    expect(rows.get(`${SERVER_ID}:${OTHER_WORKSPACE_ID}`)?.map((row) => row.agentId)).toEqual([
-      "cross-workspace-child",
-    ]);
+    const otherWorkspace = rows.get(`${SERVER_ID}:${OTHER_WORKSPACE_ID}`);
+    expect(otherWorkspace?.rootRows.map((row) => row.agentId)).toEqual(["cross-workspace-child"]);
+    expect(otherWorkspace?.childRows).toEqual([]);
   });
 
-  it("orders siblings by creation time and breaks ties by id", () => {
+  it("orders indented siblings by creation time and breaks ties by id", () => {
     const createdAt = new Date("2026-03-08T10:00:00.000Z");
     const rows = build([
       makeAgent({ id: "parent" }),
@@ -129,7 +137,7 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
       }),
     ]);
 
-    expect(rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)?.map((row) => row.agentId)).toEqual([
+    expect(rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)?.childRows.map((row) => row.agentId)).toEqual([
       "first",
       "second",
       "later",
@@ -142,9 +150,10 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
       makeAgent({ id: "cycle-b", parentAgentId: "cycle-a" }),
     ]);
 
-    const workspaceRows = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`) ?? [];
-    expect(workspaceRows.map((row) => row.agentId)).toEqual(["cycle-a"]);
-    expect(workspaceRows[0]?.children.map((row) => row.agentId)).toEqual(["cycle-b"]);
+    const workspaceRows = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`);
+    expect(workspaceRows?.rootRows.map((row) => row.agentId)).toEqual(["cycle-a"]);
+    expect(workspaceRows?.rootRows[0]?.children.map((row) => row.agentId)).toEqual(["cycle-b"]);
+    expect(workspaceRows?.childRows).toEqual([]);
   });
 
   it("derives the row status from the agent's turn and attention", () => {
@@ -164,10 +173,25 @@ describe("buildSidebarSessionRowsByWorkspace", () => {
       }),
     ]);
 
-    const children = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`) ?? [];
+    const children = rows.get(`${SERVER_ID}:${WORKSPACE_ID}`)?.childRows ?? [];
     expect(children.map((row) => [row.agentId, row.statusBucket])).toEqual([
       ["running", "running"],
       ["needs-input", "needs_input"],
     ]);
+  });
+});
+
+describe("session tree keys", () => {
+  it("percent-encodes each identity so separators cannot merge two keys", () => {
+    expect(agentSessionTreeKey("srv:a", "agent:b")).not.toBe(
+      agentSessionTreeKey("srv", "a:agent:b"),
+    );
+    expect(workspaceSessionTreeKey("srv:a", "workspace:b")).not.toBe(
+      workspaceSessionTreeKey("srv", "a:workspace:b"),
+    );
+    expect(agentSessionTreeKey(SERVER_ID, "agent")).toBe(`agent:${SERVER_ID}:agent`);
+    expect(workspaceSessionTreeKey(SERVER_ID, WORKSPACE_ID)).toBe(
+      `ws:${SERVER_ID}:${WORKSPACE_ID}`,
+    );
   });
 });

@@ -8,7 +8,7 @@ import {
 } from "@/hooks/use-sidebar-workspaces-list";
 import { useSidebarWorkspaceEntries } from "@/hooks/use-sidebar-workspace-entries";
 import { useSidebarSessionRows } from "@/hooks/use-sidebar-session-tree";
-import type { SidebarSessionRow } from "@/hooks/sidebar-session-tree-view-model";
+import type { SidebarWorkspaceSessionRows } from "@/hooks/sidebar-session-tree-view-model";
 import { usePinnedSidebarKeys, type PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import {
@@ -29,8 +29,8 @@ import {
 
 interface SidebarModel extends SidebarWorkspacesListResult {
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
-  /** Child-session trees keyed by `${serverId}:${workspaceId}`. Empty when no agent has a parent. */
-  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  /** Child-session rows keyed by `${serverId}:${workspaceId}`. Empty when no agent has a parent. */
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, SidebarWorkspaceSessionRows>;
   /** Session rows whose tree is open. Absent means collapsed, the default. */
   expandedSessionKeys: ReadonlySet<string>;
   toggleSessionExpanded: (sessionKey: string) => void;

@@ -22,34 +22,44 @@ export interface SidebarSessionRow {
   children: SidebarSessionRow[];
 }
 
+export interface SidebarWorkspaceSessionRows {
+  /**
+   * Delegated agents with no visible parent: parent archived, parent missing, or parent in
+   * another workspace. Behaviorally they are root agents, so they render unindented at the same
+   * level as a workspace row and are never hidden behind a disclosure.
+   */
+  rootRows: SidebarSessionRow[];
+  /** Children of the workspace's own root agents. These indent under the workspace row. */
+  childRows: SidebarSessionRow[];
+}
+
 export interface SidebarSessionAgentSource {
   serverId: string;
   agents: ReadonlyMap<string, Agent> | undefined;
 }
 
 /**
- * Expansion keys live in one persisted set for both row kinds. The prefixes keep a
- * client-supplied agent id from ever naming a workspace row (or the reverse).
+ * Expansion keys live in one persisted set for both row kinds. Each part is percent-encoded so a
+ * separator inside a server, workspace, or agent id cannot make two different keys identical.
  */
-export function workspaceSessionTreeKey(workspaceKey: string): string {
-  return `ws:${workspaceKey}`;
+export function workspaceSessionTreeKey(serverId: string, workspaceId: string): string {
+  return `ws:${encodeURIComponent(serverId)}:${encodeURIComponent(workspaceId)}`;
 }
 
 export function agentSessionTreeKey(serverId: string, agentId: string): string {
-  return `agent:${serverId}:${agentId}`;
+  return `agent:${encodeURIComponent(serverId)}:${encodeURIComponent(agentId)}`;
 }
 
 /**
- * Builds every workspace's child-session tree, keyed by the sidebar's `${serverId}:${workspaceId}`.
+ * Builds every workspace's delegated-agent rows, keyed by the sidebar's `${serverId}:${workspaceId}`.
  *
- * A child nests only when its parent is alive and in the same workspace. A child whose parent is
- * archived, missing, or in another workspace becomes a root row of its own workspace's tree: it
- * stays visible, flat, and never reaches across workspaces to nest.
+ * Nesting only happens when the parent is alive and in the same workspace. Everything else becomes
+ * a root row of its own workspace: visible, flat, and never reaching across workspaces.
  */
 export function buildSidebarSessionRowsByWorkspace(
   sources: readonly SidebarSessionAgentSource[],
-): Map<string, SidebarSessionRow[]> {
-  const rowsByWorkspaceKey = new Map<string, SidebarSessionRow[]>();
+): Map<string, SidebarWorkspaceSessionRows> {
+  const rowsByWorkspaceKey = new Map<string, SidebarWorkspaceSessionRows>();
   for (const source of sources) {
     const rowsByWorkspaceId = buildServerSessionRows(source.serverId, source.agents);
     for (const [workspaceId, rows] of rowsByWorkspaceId) {
@@ -62,8 +72,8 @@ export function buildSidebarSessionRowsByWorkspace(
 function buildServerSessionRows(
   serverId: string,
   agents: ReadonlyMap<string, Agent> | undefined,
-): Map<string, SidebarSessionRow[]> {
-  const rowsByWorkspaceId = new Map<string, SidebarSessionRow[]>();
+): Map<string, SidebarWorkspaceSessionRows> {
+  const rowsByWorkspaceId = new Map<string, SidebarWorkspaceSessionRows>();
   if (!agents || agents.size === 0) {
     return rowsByWorkspaceId;
   }
@@ -76,43 +86,76 @@ function buildServerSessionRows(
     if (agent.parentAgentId) delegated.push(agent);
   }
 
-  const childrenByParentId = new Map<string, Agent[]>();
-  const rootsByWorkspaceId = new Map<string, Agent[]>();
-  for (const agent of delegated) {
-    const parent = liveById.get(agent.parentAgentId ?? "");
-    // Only a delegated parent is a row of its own. A workspace root agent is represented by the
-    // workspace row itself, so its children start the tree.
-    if (parent && parent.parentAgentId && parent.workspaceId === agent.workspaceId) {
-      pushAgent(childrenByParentId, parent.id, agent);
-    } else {
-      pushAgent(rootsByWorkspaceId, agent.workspaceId ?? "", agent);
-    }
-  }
-
-  const workspaceIds = new Set<string>();
-  for (const agent of delegated) {
-    workspaceIds.add(agent.workspaceId ?? "");
-  }
-
-  for (const workspaceId of workspaceIds) {
-    // Shared across the whole workspace so a malformed parent chain (A→B→A) cannot recurse
-    // forever. Anything the roots cannot reach is still rendered, as a root of its own.
-    const rendered = new Set<string>();
-    const rows = sortAgents(rootsByWorkspaceId.get(workspaceId) ?? []).map((agent) =>
-      buildRow({ serverId, agent, childrenByParentId, rendered }),
-    );
-    const unrendered = delegated.filter(
-      (agent) => agent.workspaceId === workspaceId && !rendered.has(agent.id),
-    );
-    for (const agent of sortAgents(unrendered)) {
-      if (rendered.has(agent.id)) continue;
-      rows.push(buildRow({ serverId, agent, childrenByParentId, rendered }));
-    }
-    if (rows.length > 0) {
+  const groups = groupDelegatedAgents(delegated, liveById);
+  for (const workspaceId of groups.workspaceIds) {
+    const rows = buildWorkspaceSessionRows(serverId, workspaceId, delegated, groups);
+    if (rows) {
       rowsByWorkspaceId.set(workspaceId, rows);
     }
   }
   return rowsByWorkspaceId;
+}
+
+interface DelegatedAgentGroups {
+  childrenByParentId: Map<string, Agent[]>;
+  indentedRootsByWorkspaceId: Map<string, Agent[]>;
+  flatRootsByWorkspaceId: Map<string, Agent[]>;
+  workspaceIds: Set<string>;
+}
+
+function groupDelegatedAgents(
+  delegated: Agent[],
+  liveById: ReadonlyMap<string, Agent>,
+): DelegatedAgentGroups {
+  const childrenByParentId = new Map<string, Agent[]>();
+  const indentedRootsByWorkspaceId = new Map<string, Agent[]>();
+  const flatRootsByWorkspaceId = new Map<string, Agent[]>();
+  for (const agent of delegated) {
+    const parent = liveById.get(agent.parentAgentId ?? "");
+    if (!parent || parent.workspaceId !== agent.workspaceId) {
+      pushAgent(flatRootsByWorkspaceId, agent.workspaceId ?? "", agent);
+    } else if (!parent.parentAgentId) {
+      // The parent is a workspace root agent, represented by the workspace row itself. Its
+      // children start the indented tree.
+      pushAgent(indentedRootsByWorkspaceId, agent.workspaceId ?? "", agent);
+    } else {
+      pushAgent(childrenByParentId, parent.id, agent);
+    }
+  }
+  return {
+    childrenByParentId,
+    indentedRootsByWorkspaceId,
+    flatRootsByWorkspaceId,
+    workspaceIds: new Set(delegated.map((agent) => agent.workspaceId ?? "")),
+  };
+}
+
+function buildWorkspaceSessionRows(
+  serverId: string,
+  workspaceId: string,
+  delegated: Agent[],
+  groups: DelegatedAgentGroups,
+): SidebarWorkspaceSessionRows | null {
+  // Shared across the whole workspace so a malformed parent chain (A→B→A) cannot recurse
+  // forever. Anything the known roots cannot reach still renders, as a root row.
+  const rendered = new Set<string>();
+  const childRows = sortAgents(groups.indentedRootsByWorkspaceId.get(workspaceId) ?? []).map(
+    (agent) =>
+      buildRow({ serverId, agent, childrenByParentId: groups.childrenByParentId, rendered }),
+  );
+  const rootRows = sortAgents(groups.flatRootsByWorkspaceId.get(workspaceId) ?? []).map((agent) =>
+    buildRow({ serverId, agent, childrenByParentId: groups.childrenByParentId, rendered }),
+  );
+  const unrendered = delegated.filter(
+    (agent) => agent.workspaceId === workspaceId && !rendered.has(agent.id),
+  );
+  for (const agent of sortAgents(unrendered)) {
+    if (rendered.has(agent.id)) continue;
+    rootRows.push(
+      buildRow({ serverId, agent, childrenByParentId: groups.childrenByParentId, rendered }),
+    );
+  }
+  return childRows.length > 0 || rootRows.length > 0 ? { rootRows, childRows } : null;
 }
 
 function buildRow(input: {

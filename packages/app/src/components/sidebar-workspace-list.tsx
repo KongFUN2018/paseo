@@ -158,10 +158,11 @@ import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import {
   workspaceSessionTreeKey,
   type SidebarSessionRow,
+  type SidebarWorkspaceSessionRows,
 } from "@/hooks/sidebar-session-tree-view-model";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 
-const EMPTY_SESSION_ROWS: readonly SidebarSessionRow[] = [];
+const EMPTY_SESSION_TREE: SidebarWorkspaceSessionRows = { rootRows: [], childRows: [] };
 
 const workspaceKeyExtractor = (workspace: SidebarWorkspacePlacement) => workspace.workspaceKey;
 
@@ -1623,7 +1624,7 @@ function ProjectBlock({
 }: {
   project: SidebarProjectEntry;
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
-  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, SidebarWorkspaceSessionRows>;
   expandedSessionKeys: ReadonlySet<string>;
   onToggleSessionExpanded: (sessionKey: string) => void;
   onOpenSession: (row: SidebarSessionRow) => void;
@@ -1693,10 +1694,10 @@ function ProjectBlock({
       },
     ) => {
       const workspaceEntry = workspaceEntriesByKey.get(item.workspaceKey) ?? null;
-      const sessionRows = sessionRowsByWorkspaceKey.get(item.workspaceKey) ?? EMPTY_SESSION_ROWS;
+      const sessionRows = sessionRowsByWorkspaceKey.get(item.workspaceKey) ?? EMPTY_SESSION_TREE;
       const sessionTreeKey =
-        workspaceEntry && sessionRows.length > 0
-          ? workspaceSessionTreeKey(item.workspaceKey)
+        workspaceEntry && sessionRows.childRows.length > 0
+          ? workspaceSessionTreeKey(item.serverId, item.workspaceId)
           : null;
       return (
         <View>
@@ -1720,9 +1721,19 @@ function ProjectBlock({
             sessionTreeExpanded={sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey)}
             onToggleSessionTree={onToggleSessionExpanded}
           />
+          {workspaceEntry && sessionRows.rootRows.length > 0 ? (
+            <SidebarSessionTree
+              rows={sessionRows.rootRows}
+              depth={0}
+              expandedSessionKeys={expandedSessionKeys}
+              onToggleSessionExpanded={onToggleSessionExpanded}
+              onOpenSession={onOpenSession}
+            />
+          ) : null}
           {sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey) ? (
             <SidebarSessionTree
-              rows={sessionRows}
+              rows={sessionRows.childRows}
+              depth={1}
               expandedSessionKeys={expandedSessionKeys}
               onToggleSessionExpanded={onToggleSessionExpanded}
               onOpenSession={onOpenSession}
@@ -2206,7 +2217,7 @@ function ProjectModeList({
 > & {
   /** Swaps the list body for the label filter's empty state. Never the header above it. */
   sidebarFilterEmpty: boolean;
-  sessionRowsByWorkspaceKey: ReadonlyMap<string, readonly SidebarSessionRow[]>;
+  sessionRowsByWorkspaceKey: ReadonlyMap<string, SidebarWorkspaceSessionRows>;
   expandedSessionKeys: ReadonlySet<string>;
   onToggleSessionExpanded: (sessionKey: string) => void;
   projectIconByProjectViewKey: ReadonlyMap<string, string | null>;
@@ -2476,10 +2487,10 @@ function ProjectModeList({
     }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) => {
       const workspaceEntry = workspaceEntriesByKey.get(workspace.workspaceKey) ?? null;
       const sessionRows =
-        sessionRowsByWorkspaceKey.get(workspace.workspaceKey) ?? EMPTY_SESSION_ROWS;
+        sessionRowsByWorkspaceKey.get(workspace.workspaceKey) ?? EMPTY_SESSION_TREE;
       const sessionTreeKey =
-        workspaceEntry && sessionRows.length > 0
-          ? workspaceSessionTreeKey(workspace.workspaceKey)
+        workspaceEntry && sessionRows.childRows.length > 0
+          ? workspaceSessionTreeKey(workspace.serverId, workspace.workspaceId)
           : null;
       return (
         <View>
@@ -2507,9 +2518,19 @@ function ProjectModeList({
             sessionTreeExpanded={sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey)}
             onToggleSessionTree={onToggleSessionExpanded}
           />
+          {workspaceEntry && sessionRows.rootRows.length > 0 ? (
+            <SidebarSessionTree
+              rows={sessionRows.rootRows}
+              depth={0}
+              expandedSessionKeys={expandedSessionKeys}
+              onToggleSessionExpanded={onToggleSessionExpanded}
+              onOpenSession={handleOpenSession}
+            />
+          ) : null}
           {sessionTreeKey !== null && expandedSessionKeys.has(sessionTreeKey) ? (
             <SidebarSessionTree
-              rows={sessionRows}
+              rows={sessionRows.childRows}
+              depth={1}
               expandedSessionKeys={expandedSessionKeys}
               onToggleSessionExpanded={onToggleSessionExpanded}
               onOpenSession={handleOpenSession}

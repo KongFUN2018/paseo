@@ -4,10 +4,10 @@ import { useSessionStore, type Agent } from "@/stores/session-store";
 import type { SidebarWorkspacePlacement } from "./sidebar-workspaces-view-model";
 import {
   buildSidebarSessionRowsByWorkspace,
-  type SidebarSessionRow,
+  type SidebarWorkspaceSessionRows,
 } from "./sidebar-session-tree-view-model";
 
-const EMPTY_ROWS: ReadonlyMap<string, SidebarSessionRow[]> = new Map();
+const EMPTY_ROWS: ReadonlyMap<string, SidebarWorkspaceSessionRows> = new Map();
 const EMPTY_AGENT_MAPS: Array<ReadonlyMap<string, Agent> | undefined> = [];
 
 function areAgentMapsEqual(
@@ -27,7 +27,7 @@ function areAgentMapsEqual(
 export function useSidebarSessionRows(
   placements: readonly SidebarWorkspacePlacement[],
   enabled = true,
-): ReadonlyMap<string, SidebarSessionRow[]> {
+): ReadonlyMap<string, SidebarWorkspaceSessionRows> {
   const serverIds = useMemo(
     () => Array.from(new Set(placements.map((placement) => placement.serverId))),
     [placements],

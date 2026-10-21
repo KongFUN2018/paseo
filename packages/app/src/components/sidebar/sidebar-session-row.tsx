@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -7,7 +7,11 @@ import type { SidebarSessionRow } from "@/hooks/sidebar-session-tree-view-model"
 import { resolveRowLabel } from "@/subagents/track-presentation";
 import { density } from "@/styles/density";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import { SidebarAgentStatusIndicator, SidebarTreeToggle } from "./sidebar-workspace-row-content";
+import {
+  SidebarAgentStatusIndicator,
+  SidebarTreeToggle,
+  useSidebarRowHover,
+} from "./sidebar-workspace-row-content";
 
 // The workspace row's own left padding (theme.spacing[2]) and one step of tree indent
 // (theme.spacing[4]). Static reads of theme values: the indent is geometry, not paint, and
@@ -68,13 +72,11 @@ function SidebarSessionTreeRow({
   onOpenSession: (row: SidebarSessionRow) => void;
 }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
+  const { isHovered, hoverHandlers } = useSidebarRowHover();
   const hasChildren = row.children.length > 0;
   const expanded = hasChildren && expandedSessionKeys.has(row.key);
   const label = resolveRowLabel(row.title) ?? t("common.states.loading");
 
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const handlePress = useCallback(() => onOpenSession(row), [onOpenSession, row]);
   const handleToggle = useCallback(
     () => onToggleSessionExpanded(row.key),
@@ -83,7 +85,7 @@ function SidebarSessionTreeRow({
 
   return (
     <>
-      <View onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
+      <View {...hoverHandlers}>
         <PressHighlight
           accessibilityRole="button"
           accessibilityLabel={label}
