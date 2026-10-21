@@ -151,6 +151,7 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { RoomService } from "./room/service.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -1371,6 +1372,20 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
+  const roomService = new RoomService({
+    roomsDir: path.join(config.paseoHome, "rooms"),
+    logger,
+    agentManager,
+    broadcast: (message) => {
+      // wsServer is assigned later in this scope; until then nobody is connected.
+      wsServer?.broadcast({ type: "session", message });
+    },
+    resolveWorkspaceDirectory: async (workspaceId) => {
+      const workspace = await workspaceRegistry.get(workspaceId);
+      return workspace?.cwd ?? null;
+    },
+  });
+  await roomService.interruptStaleRooms();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
@@ -1751,6 +1766,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              roomService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

@@ -116,7 +116,17 @@ export class RoomStore {
 
   private async write(room: RoomRecord): Promise<void> {
     await this.ensureDir();
-    await writeJsonFileAtomic(this.filePath(room.id), room);
+    // Windows: a concurrent reader holds the destination briefly, so rename can
+    // fail with EPERM. A short retry is cheaper than failing the turn.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await writeJsonFileAtomic(this.filePath(room.id), room);
+        return;
+      } catch (error) {
+        if (attempt >= 3 || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      }
+    }
   }
 
   private async serializeMutation<T>(key: string, mutation: () => Promise<T>): Promise<T> {

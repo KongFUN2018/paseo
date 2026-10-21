@@ -35,6 +35,7 @@ export type RoomEvent =
   | { type: "user_pause"; at: string }
   | { type: "user_resume"; at: string }
   | { type: "user_close"; at: string }
+  | { type: "moderator_summary_ready"; at: string; summary: string }
   | { type: "budget_exhausted"; at: string; reason: string };
 
 export type ModeratorAction = "continue" | "reorder" | "skip" | "finish" | "answer_user";
@@ -169,6 +170,16 @@ function completeTurn(record: RoomRecord, memberId: string, at: string): void {
     attempt: 0,
   };
   record.updatedAt = at;
+}
+
+function handleTurnTimeout(record: RoomRecord, at: string): RoomCommand[] {
+  if (record.status !== "discussing") return [];
+  const memberId = record.turn.memberId;
+  if (!memberId) return [];
+  return [
+    { type: "cancel_agent", memberId },
+    ...handleFailure(record, at, memberId, "turn timed out"),
+  ];
 }
 
 function handleFailure(
@@ -424,11 +435,7 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
     }
 
     case "turn_timeout": {
-      if (next.status !== "discussing") break;
-      const memberId = next.turn.memberId;
-      if (!memberId) break;
-      commands.push({ type: "cancel_agent", memberId });
-      commands.push(...handleFailure(next, event.at, memberId, "turn timed out"));
+      commands.push(...handleTurnTimeout(next, event.at));
       break;
     }
 
@@ -462,6 +469,21 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
         commands.push({ type: "cancel_agent", memberId: next.turn.memberId });
       }
       commands.push(...beginClosing(next, event.at, null));
+      break;
+    }
+
+    case "moderator_summary_ready": {
+      appendEntry(next, {
+        at: event.at,
+        kind: "moderator",
+        memberId: null,
+        agentId: next.moderator.agentId,
+        text: event.summary,
+        turnId: null,
+      });
+      next.summary = event.summary;
+      next.pendingCheckpoint = null;
+      next.updatedAt = event.at;
       break;
     }
 

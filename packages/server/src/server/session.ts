@@ -181,6 +181,8 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { RoomSession } from "./session/room/room-session.js";
+import type { RoomService } from "./room/service.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -470,6 +472,7 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  roomService?: RoomService;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -792,6 +795,7 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly roomSession: RoomSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -831,6 +835,7 @@ export class Session {
       workspaceLabelService,
       filesystem,
       scheduleService,
+      roomService,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -966,6 +971,11 @@ export class Session {
     this.scheduleSession = new ScheduleSession({
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
+      logger: this.sessionLogger,
+    });
+    this.roomSession = new RoomSession({
+      host: { emit: (msg) => this.emit(msg) },
+      roomService,
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -2391,7 +2401,7 @@ export class Session {
       this.dispatchPluginDirectoryMessage(msg) ??
       this.dispatchPluginMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
-      this.dispatchScheduleMessage(msg) ??
+      this.dispatchRoomAndScheduleMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -3120,6 +3130,15 @@ export class Session {
       default:
         return this.terminalController.dispatch(msg, this.delivery);
     }
+  }
+
+  private dispatchRoomAndScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    if (msg.type.startsWith("room.")) {
+      return this.roomSession.handle(
+        msg as Extract<SessionInboundMessage, { type: `room.${string}.request` }>,
+      );
+    }
+    return this.dispatchScheduleMessage(msg);
   }
 
   private dispatchScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
