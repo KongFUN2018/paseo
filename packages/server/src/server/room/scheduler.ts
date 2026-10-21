@@ -33,6 +33,7 @@ export type RoomEvent =
     }
   | { type: "turn_timeout"; at: string }
   | { type: "user_pause"; at: string }
+  | { type: "user_resume"; at: string }
   | { type: "user_close"; at: string }
   | { type: "budget_exhausted"; at: string; reason: string };
 
@@ -180,9 +181,13 @@ function handleFailure(
   if (!member) return [];
   const attempt = record.turn.attempt + 1;
   if (attempt < MAX_TURN_ATTEMPTS) {
-    // Retry the same member once, with the failure reason carried into the prompt.
+    // Retry the same member once, with a fresh timeout window for the retry.
     record.turn.attempt = attempt;
     record.turn.status = "retrying";
+    record.turn.startedAt = at;
+    record.turn.deadlineAt = new Date(
+      new Date(at).getTime() + record.limits.turnTimeoutMs,
+    ).toISOString();
     record.updatedAt = at;
     member.status = "speaking";
     return [{ type: "prompt_member", memberId, attempt }];
@@ -295,11 +300,41 @@ function handleInterjectionQueued(
   });
   record.updatedAt = event.at;
   // Never interrupt the current speaker; the moderator decides at the next checkpoint.
-  if (record.turn.status === "idle") {
+  // Interjections queue only while the room is interrupted; that is not a checkpoint.
+  if (record.status === "discussing" && record.turn.status === "idle") {
     record.pendingCheckpoint = "interjection";
     return [{ type: "ask_moderator", checkpoint: "interjection" }];
   }
   return [];
+}
+
+function handleResume(
+  record: RoomRecord,
+  event: Extract<RoomEvent, { type: "user_resume" }>,
+): RoomCommand[] {
+  if (record.status !== "interrupted") return [];
+  record.status = "discussing";
+  record.updatedAt = event.at;
+  const interruptedMemberId = record.turn.status === "idle" ? null : record.turn.memberId;
+  // A resumed turn is a fresh turn: reset the attempt counter, then re-prompt the
+  // interrupted speaker. It never left the round queue, so it is not in
+  // remainingMemberIds anymore.
+  record.turn = {
+    index: record.turn.index,
+    memberId: null,
+    agentId: null,
+    turnId: null,
+    status: "idle",
+    startedAt: null,
+    deadlineAt: null,
+    attempt: 0,
+  };
+  if (!interruptedMemberId) {
+    return startNextTurn(record, event.at, null);
+  }
+  const member = findMember(record, interruptedMemberId);
+  if (member) member.status = "ready";
+  return startTurn(record, interruptedMemberId, event.at);
 }
 
 function handleCheckpoint(
@@ -410,6 +445,11 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
       if (next.turn.status === "speaking" && next.turn.memberId) {
         commands.push({ type: "cancel_agent", memberId: next.turn.memberId });
       }
+      break;
+    }
+
+    case "user_resume": {
+      commands.push(...handleResume(next, event));
       break;
     }
 

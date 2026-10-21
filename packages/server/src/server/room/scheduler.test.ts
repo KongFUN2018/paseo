@@ -190,6 +190,55 @@ describe("RoomScheduler timeout and retry", () => {
   });
 });
 
+describe("RoomScheduler pause and resume", () => {
+  test("pause cancels the speaker and resume re-prompts it from a fresh turn", () => {
+    const { record, results } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "user_pause", at: AT },
+      { type: "user_resume", at: "2026-10-21T10:05:00.000Z" },
+    ]);
+
+    expect(results[2]?.commands).toEqual([{ type: "cancel_agent", memberId: "member_1" }]);
+    expect(record.status).toBe("discussing");
+    expect(results[3]?.commands).toEqual([
+      { type: "prompt_member", memberId: "member_1", attempt: 0 },
+    ]);
+    expect(record.turn).toMatchObject({
+      memberId: "member_1",
+      status: "speaking",
+      attempt: 0,
+      deadlineAt: "2026-10-21T10:20:00.000Z",
+    });
+  });
+
+  test("a retry gets a fresh deadline window", () => {
+    const { record } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      {
+        type: "member_turn_failed",
+        at: "2026-10-21T10:10:00.000Z",
+        memberId: "member_1",
+        reason: "boom",
+      },
+    ]);
+
+    expect(record.turn.deadlineAt).toBe("2026-10-21T10:25:00.000Z");
+  });
+
+  test("an interjection during an interruption does not ask the moderator", () => {
+    const { results } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "user_pause", at: AT },
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "等恢复再说" },
+    ]);
+
+    expect(results[3]?.commands).toEqual([]);
+  });
+});
+
 describe("RoomScheduler interjections", () => {
   test("queues an interjection without interrupting the current speaker", () => {
     const { record, results } = run(makeRecord(), [
