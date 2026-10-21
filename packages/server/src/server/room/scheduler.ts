@@ -244,6 +244,8 @@ function handleOpeningReady(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "moderator_opening_ready" }>,
 ): RoomCommand[] {
+  // A late opening reply must not revive a paused or closed room.
+  if (record.status !== "opening") return [];
   appendEntry(record, {
     at: event.at,
     kind: "opening",
@@ -351,6 +353,8 @@ function handleCheckpoint(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "moderator_checkpoint_ready" }>,
 ): RoomCommand[] {
+  // Checkpoints only apply while the room is actively discussing.
+  if (record.status !== "discussing") return [];
   const commands: RoomCommand[] = [];
   const checkpoint = record.pendingCheckpoint;
   record.pendingCheckpoint = null;

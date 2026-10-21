@@ -483,9 +483,16 @@ export class RoomService {
     let event: RoomEvent;
     try {
       const result = await this.options.agentManager.runAgent(member.agentId, prompt);
-      event = result.canceled
-        ? { type: "turn_timeout", at: this.stamp() }
-        : { type: "member_turn_completed", at: this.stamp(), memberId, text: result.finalText };
+      if (result.canceled) {
+        // Whoever cancelled (timeout, pause, close) already settled the scheduler.
+        return;
+      }
+      event = {
+        type: "member_turn_completed",
+        at: this.stamp(),
+        memberId,
+        text: result.finalText,
+      };
     } catch (error) {
       event = {
         type: "member_turn_failed",

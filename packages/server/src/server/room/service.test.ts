@@ -157,6 +157,11 @@ class ScriptedRoomSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     this.interruptCount += 1;
+    this.pushEvent({
+      type: "turn_cancelled",
+      provider: this.provider,
+      turnId: `turn-${this.id}-${this.turnCounter}`,
+    });
   }
 
   async close(): Promise<void> {}
@@ -214,7 +219,6 @@ describe("RoomService with a scripted provider", () => {
     roomsDir = await mkdtemp(join(tmpdir(), "room-service-rooms-"));
     agentsDir = await mkdtemp(join(tmpdir(), "room-service-agents-"));
     logger = createTestLogger();
-    // eslint-disable-next-line no-console -- temporary debug
     const storage = new AgentStorage(agentsDir, logger);
     await storage.initialize();
     const client = new ScriptedRoomClient(logger, holdTurn);
@@ -352,6 +356,40 @@ describe("RoomService with a scripted provider", () => {
 
     await expect(fresh.start(room.id)).rejects.toThrow(/resume/);
     // The held turn never resolves; its late timeout is dropped while interrupted.
+  });
+
+  test("a cancelled turn after pause feeds no scheduler event", async () => {
+    const gate = deferred<void>();
+    const { service } = await buildService(gate);
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+    await new Promise((resolveTick) => setTimeout(resolveTick, 50));
+
+    await service.pause(room.id);
+    gate.resolve();
+    await new Promise((resolveTick) => setTimeout(resolveTick, 80));
+
+    const paused = await service.get(room.id);
+    expect(paused?.status).toBe("interrupted");
+    // The cancelled run must not land as a completed statement or trigger a retry.
+    expect(paused?.transcript.filter((entry) => entry.kind === "member")).toHaveLength(0);
+  });
+
+  test("a late moderator opening cannot revive an interrupted room", async () => {
+    const gate = deferred<void>();
+    const { service } = await buildService(gate);
+    const room = await service.create({ ...createInput(), limits: { turnTimeoutMs: 120 } });
+    await service.start(room.id);
+    await new Promise((resolveTick) => setTimeout(resolveTick, 60));
+
+    // Opening still in flight (moderator runs unheld, but a member turn holds).
+    await service.pause(room.id);
+    gate.resolve();
+    await new Promise((resolveTick) => setTimeout(resolveTick, 120));
+
+    const interrupted = await service.get(room.id);
+    expect(interrupted?.status).toBe("interrupted");
   });
 
   test("rejects artifact paths that escape the workspace", async () => {
