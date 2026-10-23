@@ -625,7 +625,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1.5],
-    minHeight: 32,
+    minHeight: 44,
   },
   limitsLabel: {
     fontSize: theme.fontSize.base,
