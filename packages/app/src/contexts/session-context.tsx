@@ -2,6 +2,8 @@ import { useRef, ReactNode, useCallback, useEffect } from "react";
 import { Buffer } from "buffer";
 import { AppState } from "react-native";
 import { observeOpenWorkspaceAgentIds } from "@/stores/workspace-layout-store";
+import { applyRoomUpdate } from "@/rooms/rooms-store";
+import { upsertRoomIntoRoomsCache } from "@/rooms/rooms-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useClientActivity } from "@/hooks/use-client-activity";
@@ -662,6 +664,12 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       voiceRuntime?.onServerSpeechStateChanged(serverId, message.payload.isSpeaking);
     });
 
+    const unsubRoomUpdate = client.on("room_update", (message) => {
+      if (message.type !== "room_update") return;
+      applyRoomUpdate(serverId, message.payload.room, message.payload.truncated ?? false);
+      upsertRoomIntoRoomsCache(queryClient, serverId, message.payload.room);
+    });
+
     const unsubTerminalAttention = onFeed("terminal_attention_required", (message) => {
       if (message.type !== "terminal_attention_required") {
         return;
@@ -697,6 +705,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       unsubActivity();
       unsubTranscription();
       unsubVoiceInputState();
+      unsubRoomUpdate();
       unsubTerminalAttention();
     };
   }, [
