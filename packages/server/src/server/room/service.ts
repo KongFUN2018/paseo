@@ -95,6 +95,11 @@ export class RoomService {
   }
 
   async create(input: CreateRoomInput): Promise<RoomRecord> {
+    // Mirror the wire schema's member cap (room.create min(2).max(4)); RPC
+    // requests are validated there, but direct service callers skip that layer.
+    if (input.members.length < 2 || input.members.length > 4) {
+      throw new Error(`Room requires 2 to 4 members, got ${input.members.length}`);
+    }
     const workspaceDirectory = await this.options.resolveWorkspaceDirectory(input.workspaceId);
     if (!workspaceDirectory) {
       throw new Error(`Workspace ${input.workspaceId} not found`);

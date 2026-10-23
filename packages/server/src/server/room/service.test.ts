@@ -448,6 +448,29 @@ describe("RoomService with a scripted provider", () => {
     expect(ok.id).toMatch(/^room_[0-9a-f]{8}$/);
   });
 
+  test("rejects member counts outside 2-4 even when called directly", async () => {
+    const { service } = await buildService(null);
+    const base = createInput();
+    await expect(service.create({ ...base, members: [base.members[0]] })).rejects.toThrow(
+      /2 to 4 members, got 1/,
+    );
+    await expect(
+      service.create({
+        ...base,
+        members: [
+          ...base.members,
+          { provider: "codex", persona: "性能" },
+          { provider: "codex", persona: "安全" },
+        ],
+      }),
+    ).rejects.toThrow(/2 to 4 members, got 5/);
+    const ok = await service.create({
+      ...base,
+      members: base.members.slice(0, 2),
+    });
+    expect(ok.members).toHaveLength(2);
+  });
+
   test("a failed artifact write keeps the room closing and surfaces the error", async () => {
     const { service } = await buildService(null);
     const room = await service.create(createInput());
