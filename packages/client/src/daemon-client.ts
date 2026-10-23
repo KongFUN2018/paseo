@@ -138,6 +138,7 @@ import type {
   AgentProvider,
   AgentSessionConfig,
 } from "@getpaseo/protocol/agent-types";
+import type { RoomLimits } from "@getpaseo/protocol/room/types";
 import type {
   AgentConfigApply,
   MutableDaemonConfig,
@@ -654,6 +655,27 @@ type ScheduleUpdatePayload = Extract<
   SessionOutboundMessage,
   { type: "schedule/update/response" }
 >["payload"];
+type RoomCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.create.response" }
+>["payload"];
+type RoomListPayload = Extract<SessionOutboundMessage, { type: "room.list.response" }>["payload"];
+type RoomGetPayload = Extract<SessionOutboundMessage, { type: "room.get.response" }>["payload"];
+type RoomStartPayload = Extract<SessionOutboundMessage, { type: "room.start.response" }>["payload"];
+type RoomPausePayload = Extract<SessionOutboundMessage, { type: "room.pause.response" }>["payload"];
+type RoomResumePayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.resume.response" }
+>["payload"];
+type RoomInterjectPayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.interject.response" }
+>["payload"];
+type RoomClosePayload = Extract<SessionOutboundMessage, { type: "room.close.response" }>["payload"];
+type RoomReopenPayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.reopen.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -900,6 +922,37 @@ export interface UpdateScheduleOptions {
   maxRuns?: number | null;
   expiresAt?: string | null;
   requestId?: string;
+}
+export interface RoomMemberInput {
+  provider: AgentProvider;
+  model?: string | null;
+  modeId?: string | null;
+  persona: string;
+}
+export interface RoomModeratorInput {
+  provider: AgentProvider;
+  model?: string | null;
+  modeId?: string | null;
+}
+export interface CreateRoomOptions {
+  workspaceId: string;
+  name: string;
+  topic: string;
+  moderator: RoomModeratorInput;
+  members: RoomMemberInput[];
+  artifactPath: string;
+  limits?: RoomLimits;
+  requestId?: string;
+}
+export interface RoomIdOptions {
+  roomId: string;
+  requestId?: string;
+}
+export interface StartRoomOptions extends RoomIdOptions {
+  resume?: boolean;
+}
+export interface InterjectRoomOptions extends RoomIdOptions {
+  text: string;
 }
 export interface RenameBranchInput {
   cwd: string;
@@ -6236,6 +6289,82 @@ export class DaemonClient {
         ...(options.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
       },
       responseType: "schedule/update/response",
+    });
+  }
+
+  async roomCreate(options: CreateRoomOptions): Promise<RoomCreatePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "room.create.request",
+        workspaceId: options.workspaceId,
+        name: options.name,
+        topic: options.topic,
+        moderator: options.moderator,
+        members: options.members,
+        artifactPath: options.artifactPath,
+        ...(options.limits ? { limits: options.limits } : {}),
+      },
+    });
+  }
+
+  async roomList(requestId?: string): Promise<RoomListPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId,
+      message: { type: "room.list.request" },
+    });
+  }
+
+  async roomGet(options: RoomIdOptions): Promise<RoomGetPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.get.request", roomId: options.roomId },
+    });
+  }
+
+  async roomStart(options: StartRoomOptions): Promise<RoomStartPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "room.start.request",
+        roomId: options.roomId,
+        ...(options.resume === undefined ? {} : { resume: options.resume }),
+      },
+    });
+  }
+
+  async roomPause(options: RoomIdOptions): Promise<RoomPausePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.pause.request", roomId: options.roomId },
+    });
+  }
+
+  async roomResume(options: RoomIdOptions): Promise<RoomResumePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.resume.request", roomId: options.roomId },
+    });
+  }
+
+  async roomInterject(options: InterjectRoomOptions): Promise<RoomInterjectPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.interject.request", roomId: options.roomId, text: options.text },
+    });
+  }
+
+  async roomClose(options: RoomIdOptions): Promise<RoomClosePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.close.request", roomId: options.roomId },
+    });
+  }
+
+  async roomReopen(options: RoomIdOptions): Promise<RoomReopenPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.reopen.request", roomId: options.roomId },
     });
   }
 
