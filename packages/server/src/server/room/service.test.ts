@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, afterEach, test } from "vitest";
@@ -19,6 +19,7 @@ import type {
   AgentStreamEvent,
 } from "../agent/agent-sdk-types.js";
 import { RoomService, type CreateRoomInput } from "./service.js";
+import { RoomStore } from "./store.js";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -38,14 +39,30 @@ async function waitForRoom(
   roomId: string,
   until: (room: { status: string }) => boolean,
   timeoutMs = 8000,
-): Promise<Awaited<ReturnType<RoomService["get"]>> & object> {
+): Promise<NonNullable<Awaited<ReturnType<RoomService["get"]>>["room"]>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const room = await service.get(roomId);
+    const { room } = await service.get(roomId);
     if (room && until(room)) return room;
     if (Date.now() > deadline) throw new Error(`timed out waiting for room ${roomId}`);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
   }
+}
+
+function hasMemberUsage(updates: SessionOutboundMessage[]): boolean {
+  for (const update of updates) {
+    if (update.type !== "room_update") continue;
+    for (const member of update.payload.room.members) {
+      if (member.lastUsage !== undefined) return true;
+    }
+  }
+  return false;
+}
+
+function hasSystemEntry(room: { transcript: Array<{ kind: string; text: string }> }): boolean {
+  return room.transcript.some(
+    (entry) => entry.kind === "system" && entry.text.includes("Member member_1 failed"),
+  );
 }
 
 const CAPABILITIES = {
@@ -101,7 +118,13 @@ class ScriptedRoomSession implements AgentSession {
         provider: this.provider,
         item: { type: "assistant_message", text: this.scriptReply(text) },
       });
-      this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      this.pushEvent({
+        type: "turn_completed",
+        provider: this.provider,
+        turnId,
+        // Member turns report usage so the wire snapshot can carry it (§8.1).
+        ...(this.memberId ? { usage: { inputTokens: 100, outputTokens: 50 } } : {}),
+      });
     })();
     return { turnId };
   }
@@ -263,7 +286,7 @@ describe("RoomService with a scripted provider", () => {
     };
   }
 
-  test("runs 3 members for 2 rounds and closes with a summary", async () => {
+  test("runs 3 members for 2 rounds, parks in closing, then closes on confirmation", async () => {
     const { service, client, storage, updates, invalidUpdates } = await buildService(null);
     const room = await service.create(createInput());
 
@@ -275,8 +298,20 @@ describe("RoomService with a scripted provider", () => {
     const again = await service.start(room.id);
     expect(again.id).toBe(room.id);
 
-    const closed = await waitForRoom(service, room.id, (current) => current.status === "closed");
-    expect(closed.summary).toContain("最终结论");
+    // The summary lands and the room parks in closing awaiting the user's
+    // confirmation; members stay alive (design §3.6, acceptance §1.3.4).
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    expect(closing.summary).toContain("最终结论");
+    expect(closing.transcript.at(-1)).toMatchObject({ kind: "moderator", text: "## 最终结论" });
+    expect(closing.members.every((member) => member.status !== "archived")).toBe(true);
+
+    const closed = await service.close(room.id);
+    expect(closed.status).toBe("closed");
+    expect(closed.closedReason).toBe("closed by user");
     const memberEntries = closed.transcript.filter((entry) => entry.kind === "member");
     expect(memberEntries).toHaveLength(6);
     for (const member of closed.members) {
@@ -284,6 +319,10 @@ describe("RoomService with a scripted provider", () => {
       expect(member.status).toBe("archived");
     }
     expect(closed.round.index).toBe(2);
+
+    // The summary artifact landed in the workspace before archiving (§5.5).
+    const artifact = await readFile(join(workDir, "notes", "summary.md"), "utf-8");
+    expect(artifact).toContain("最终结论");
 
     // Exactly one moderator + three members were created, all room-labeled.
     expect(client.configs).toHaveLength(4);
@@ -302,7 +341,10 @@ describe("RoomService with a scripted provider", () => {
       type: "room_update",
       payload: { room: { id: room.id } },
     });
-    await expect(service.get(room.id)).resolves.toMatchObject({ status: "closed" });
+    // Wire snapshots carry each member's live lastUsage (§8.1).
+    expect(hasMemberUsage(updates)).toBe(true);
+    const { room: final } = await service.get(room.id);
+    expect(final).toMatchObject({ status: "closed" });
   });
 
   test("an interjection during a held turn queues without interrupting the speaker", async () => {
@@ -326,8 +368,8 @@ describe("RoomService with a scripted provider", () => {
     ).toBe(true);
 
     gate.resolve();
-    const closed = await waitForRoom(service, room.id, (current) => current.status === "closed");
-    expect(closed.interjections[0]?.status).toBe("queued");
+    const closing = await waitForRoom(service, room.id, (current) => current.status === "closing");
+    expect(closing.interjections[0]?.status).toBe("queued");
   });
 
   test("restart marks running rooms interrupted; start without resume fails", async () => {
@@ -351,7 +393,7 @@ describe("RoomService with a scripted provider", () => {
       resolveWorkspaceDirectory: () => Promise.resolve(workDir),
     });
     await fresh.interruptStaleRooms();
-    const interrupted = await fresh.get(room.id);
+    const { room: interrupted } = await fresh.get(room.id);
     expect(interrupted?.status).toBe("interrupted");
 
     await expect(fresh.start(room.id)).rejects.toThrow(/resume/);
@@ -370,7 +412,7 @@ describe("RoomService with a scripted provider", () => {
     gate.resolve();
     await new Promise((resolveTick) => setTimeout(resolveTick, 80));
 
-    const paused = await service.get(room.id);
+    const { room: paused } = await service.get(room.id);
     expect(paused?.status).toBe("interrupted");
     // The cancelled run must not land as a completed statement or trigger a retry.
     expect(paused?.transcript.filter((entry) => entry.kind === "member")).toHaveLength(0);
@@ -388,7 +430,7 @@ describe("RoomService with a scripted provider", () => {
     gate.resolve();
     await new Promise((resolveTick) => setTimeout(resolveTick, 120));
 
-    const interrupted = await service.get(room.id);
+    const { room: interrupted } = await service.get(room.id);
     expect(interrupted?.status).toBe("interrupted");
   });
 
@@ -404,5 +446,107 @@ describe("RoomService with a scripted provider", () => {
     );
     const ok = await service.create({ ...base, artifactPath: "notes/summary.md" });
     expect(ok.id).toMatch(/^room_[0-9a-f]{8}$/);
+  });
+
+  test("a failed artifact write keeps the room closing and surfaces the error", async () => {
+    const { service } = await buildService(null);
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    expect(closing.summary).toContain("最终结论");
+
+    // Occupy the artifact path with a directory so the atomic write fails.
+    await mkdir(join(workDir, "notes", "summary.md"), { recursive: true });
+    await expect(service.close(room.id)).rejects.toThrow();
+
+    const { room: still } = await service.get(room.id);
+    expect(still?.status).toBe("closing");
+    expect(still?.summary).toContain("最终结论");
+    expect(still?.members.every((member) => member.status !== "archived")).toBe(true);
+  });
+
+  test("rejects interjections outside discussing, closing, and interrupted", async () => {
+    const { service } = await buildService(null);
+    const room = await service.create(createInput());
+
+    // forming: no discussion to interrupt yet.
+    await expect(service.interject(room.id, "hi")).rejects.toThrow(/not allowed/);
+
+    // opening: the moderator opening is still in flight.
+    const started = await service.start(room.id);
+    expect(started.status).toBe("opening");
+    await expect(service.interject(room.id, "hi")).rejects.toThrow(/not allowed/);
+
+    // closed: nothing to add.
+    await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    await service.close(room.id);
+    await expect(service.interject(room.id, "hi")).rejects.toThrow(/not allowed/);
+  });
+
+  test("caps the transcript on the wire past 2000 entries, disk stays complete", async () => {
+    const { service, updates } = await buildService(null);
+    const room = await service.create(createInput());
+
+    // Pad the stored transcript the way a long-lived room would (§8.3).
+    const store = new RoomStore(roomsDir, logger);
+    const padded = Array.from({ length: 2001 }, (_, index) => ({
+      seq: index + 1,
+      at: "2026-10-21T00:00:00.000Z",
+      kind: "member" as const,
+      memberId: "member_1",
+      agentId: null,
+      text: `speech-${index + 1}`,
+      turnId: null,
+    }));
+    await store.update(room.id, (current) => ({ ...current, transcript: padded, lastSeq: 2001 }));
+
+    // room.get returns only the last 500 entries with truncated set.
+    const { room: fetched, truncated } = await service.get(room.id);
+    expect(truncated).toBe(true);
+    expect(fetched?.transcript).toHaveLength(500);
+    expect(fetched?.transcript[0]).toMatchObject({ seq: 1502 });
+    expect(fetched?.transcript.at(-1)).toMatchObject({ seq: 2001 });
+
+    // The broadcast goes through the same cap.
+    await service.close(room.id); // forming room closes without a summary
+    const lastUpdate = updates.at(-1);
+    expect(lastUpdate).toMatchObject({
+      type: "room_update",
+      payload: { truncated: true, room: { id: room.id } },
+    });
+    if (lastUpdate?.type === "room_update") {
+      expect(lastUpdate.payload.room.transcript).toHaveLength(500);
+    }
+
+    // The on-disk record keeps the full transcript.
+    const onDisk = await store.get(room.id);
+    expect(onDisk?.transcript).toHaveLength(2001);
+  });
+
+  test("a turn timeout retries once, then fails the member and moves on", async () => {
+    const gate = deferred<void>();
+    const { service } = await buildService(gate);
+    const room = await service.create({ ...createInput(), limits: { turnTimeoutMs: 60 } });
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    // The held turn times out twice: retry, then the member fails for the round.
+    const failed = await waitForRoom(service, room.id, hasSystemEntry);
+    expect(failed.members[0]?.status).toBe("failed");
+    gate.resolve();
+    // Let the room reach its resting state so cleanup does not race in-flight writes.
+    await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
   });
 });

@@ -25,6 +25,11 @@ import {
 } from "./prompt.js";
 import { RoomStore } from "./store.js";
 import { stepRoomScheduler, type RoomCommand, type RoomEvent } from "./scheduler.js";
+import { writeRoomArtifact } from "./artifact.js";
+
+/** Transcript cap for wire snapshots; the on-disk record stays complete (§8.3). */
+const WIRE_TRANSCRIPT_LIMIT = 2000;
+const WIRE_TRANSCRIPT_TAIL = 500;
 
 /** The slice of AgentManager the room service is allowed to touch. */
 export type RoomAgentManager = Pick<
@@ -154,8 +159,10 @@ export class RoomService {
     );
   }
 
-  async get(roomId: string): Promise<RoomRecord | null> {
-    return this.store.get(roomId);
+  async get(roomId: string): Promise<{ room: RoomRecord | null; truncated: boolean }> {
+    const record = await this.store.get(roomId);
+    if (!record) return { room: null, truncated: false };
+    return this.snapshotForWire(record);
   }
 
   async start(roomId: string, resume = false): Promise<RoomRecord> {
@@ -195,6 +202,13 @@ export class RoomService {
   async interject(roomId: string, text: string): Promise<RoomRecord> {
     return this.serialize(roomId, async () => {
       const record = await this.requireRoom(roomId);
+      if (
+        record.status === "forming" ||
+        record.status === "opening" ||
+        record.status === "closed"
+      ) {
+        throw new Error(`Room is ${record.status}; interject is not allowed`);
+      }
       const event: RoomEvent = {
         type: "interjection_queued",
         at: this.stamp(),
@@ -209,12 +223,17 @@ export class RoomService {
     return this.serialize(roomId, async () => {
       const record = await this.requireRoom(roomId);
       if (record.status === "closed") return record; // Idempotent (§8.4).
-      const next = await this.applyStep(record, { type: "user_close", at: this.stamp() });
-      if (!next.moderator.agentId) {
+      if (!record.moderator.agentId) {
         // Nothing can produce a summary; close immediately.
-        return this.finalizeClose(next, "closed before start");
+        return this.finalizeClose(record, "closed before start");
       }
-      return next; // Summary + finalize run through the moderator task.
+      if (record.status === "closing" && record.summary) {
+        // The user confirmed the summary: persist the artifact, then archive.
+        return this.finalizeClose(record, "closed by user");
+      }
+      // opening/discussing/interrupted: begin closing and ask for a summary.
+      // closing without a summary (in flight or lost): re-ask so the room heals.
+      return this.applyStep(record, { type: "user_close", at: this.stamp() });
     });
   }
 
@@ -424,13 +443,14 @@ export class RoomService {
       const summary = text.trim().length > 0 ? text.trim() : "（主持人总结不可用。）";
       await this.serialize(roomId, async () => {
         const current = await this.requireRoom(roomId);
-        const next = await this.applyStep(current, {
+        await this.applyStep(current, {
           type: "moderator_summary_ready",
           at: this.stamp(),
           summary,
         });
-        await this.finalizeClose(next, "closed by user");
       });
+      // The room now sits in closing with the summary visible; the user
+      // confirms by calling close() again (design §3.6).
       return;
     }
 
@@ -529,6 +549,20 @@ export class RoomService {
   // ===========================================================================
 
   private async finalizeClose(record: RoomRecord, reason: string): Promise<RoomRecord> {
+    if (record.summary !== null) {
+      // Persist the artifact before archiving. On failure the room stays in
+      // closing and the error propagates to the caller — never render a room
+      // closed whose summary file was never written (design §3.6, §5.5).
+      const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
+      if (!workspaceDirectory) {
+        throw new Error(`Workspace ${record.workspaceId} not found`);
+      }
+      await writeRoomArtifact({
+        workspaceDirectory,
+        artifactPath: record.artifactPath,
+        summary: record.summary,
+      });
+    }
     for (const agentId of this.collectAgentIds(record)) {
       await this.options.agentManager.archiveAgent(agentId).catch(() => undefined);
     }
@@ -572,8 +606,29 @@ export class RoomService {
     return next;
   }
 
+  /**
+   * Wire snapshot of a record: attaches each member's live lastUsage from
+   * AgentManager and caps the transcript for the wire (§8.1, §8.3). The
+   * on-disk record keeps the full transcript and no usage.
+   */
+  private snapshotForWire(record: RoomRecord): { room: RoomRecord; truncated: boolean } {
+    const members = record.members.map((member) =>
+      member.agentId
+        ? { ...member, lastUsage: this.options.agentManager.getAgent(member.agentId)?.lastUsage }
+        : member,
+    );
+    if (record.transcript.length <= WIRE_TRANSCRIPT_LIMIT) {
+      return { room: { ...record, members }, truncated: false };
+    }
+    return {
+      room: { ...record, members, transcript: record.transcript.slice(-WIRE_TRANSCRIPT_TAIL) },
+      truncated: true,
+    };
+  }
+
   private broadcast(record: RoomRecord): void {
-    this.options.broadcast({ type: "room_update", payload: { room: record } });
+    const { room, truncated } = this.snapshotForWire(record);
+    this.options.broadcast({ type: "room_update", payload: { room, truncated } });
   }
 
   private stamp(): string {

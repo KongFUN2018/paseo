@@ -72,12 +72,13 @@ export class RoomSession {
         return;
       }
       case "room.get.request": {
-        const room = await service.get(request.roomId);
+        const { room, truncated } = await service.get(request.roomId);
         this.host.emit({
           type: "room.get.response",
           payload: {
             requestId: request.requestId,
             room,
+            truncated: room ? truncated : undefined,
             error: room ? null : `Room ${request.roomId} not found`,
           },
         });
