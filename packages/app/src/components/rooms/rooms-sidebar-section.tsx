@@ -29,6 +29,9 @@ export function RoomsSidebarSection() {
   const workspaceId = selection?.workspaceId ?? null;
   const supportsRooms = useHostFeature(serverId, "room");
   const [formOpen, setFormOpen] = useState(false);
+  // The design requires a fresh form on every open (§6.3): bumping this key
+  // remounts the sheet, discarding the previous draft and submit error.
+  const [formEpoch, setFormEpoch] = useState(0);
   const { rooms } = useRooms(supportsRooms ? serverId : null);
 
   const openRoom = useCallback(
@@ -46,6 +49,7 @@ export function RoomsSidebarSection() {
   );
   const handleOpenForm = useCallback(() => {
     if (workspaceId) {
+      setFormEpoch((epoch) => epoch + 1);
       setFormOpen(true);
     }
   }, [workspaceId]);
@@ -88,6 +92,7 @@ export function RoomsSidebarSection() {
         <RoomSummaryRow key={room.id} room={room} onPress={openRoom} />
       ))}
       <RoomFormSheet
+        key={formEpoch}
         visible={formOpen}
         serverId={serverId}
         workspaceId={workspaceId}
