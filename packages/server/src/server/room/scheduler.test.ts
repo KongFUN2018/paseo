@@ -420,4 +420,16 @@ describe("RoomScheduler summary gating", () => {
     expect(record.summary).toBeNull();
     expect(record.transcript).toHaveLength(0);
   });
+
+  test("closing without a summary re-asks on user_close", () => {
+    // A room left closing without a summary (daemon restart mid-summary) heals
+    // by asking the moderator again instead of closing for good.
+    const { record, results } = run(makeRecord({ status: "closing" }), [
+      { type: "user_close", at: AT },
+    ]);
+
+    expect(results[0]?.commands).toEqual([{ type: "ask_moderator", checkpoint: "summary" }]);
+    expect(record.status).toBe("closing");
+    expect(record.pendingCheckpoint).toBe("summary");
+  });
 });
