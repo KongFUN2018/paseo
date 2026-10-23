@@ -95,7 +95,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
           <View style={styles.headerActions}>
             <Button
               variant="default"
-              size="sm"
+              size="md"
               onPress={actions.startRoom}
               disabled={actions.pendingAction !== null}
               loading={actions.pendingAction === "start"}
@@ -105,7 +105,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
             </Button>
             <Button
               variant="outline"
-              size="sm"
+              size="md"
               onPress={confirmAndClose}
               disabled={actions.pendingAction !== null}
               testID="room-close-header"
@@ -120,7 +120,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
           <View style={styles.headerActions}>
             <Button
               variant="default"
-              size="sm"
+              size="md"
               onPress={actions.pauseRoom}
               disabled={actions.pendingAction !== null}
               loading={actions.pendingAction === "pause"}
@@ -130,7 +130,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
             </Button>
             <Button
               variant="outline"
-              size="sm"
+              size="md"
               onPress={confirmAndClose}
               disabled={actions.pendingAction !== null}
               testID="room-close-header"
@@ -143,7 +143,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
         return (
           <Button
             variant="outline"
-            size="sm"
+            size="md"
             onPress={confirmAndReopen}
             disabled={actions.pendingAction !== null}
             loading={actions.pendingAction === "reopen"}

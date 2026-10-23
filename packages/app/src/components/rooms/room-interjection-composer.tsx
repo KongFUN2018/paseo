@@ -69,7 +69,7 @@ export const RoomInterjectionComposer = forwardRef<
         />
         <Button
           variant="default"
-          size="sm"
+          size="md"
           onPress={handleSubmit}
           disabled={!draft.trim() || submitting || Boolean(disabledReason)}
           loading={submitting}
