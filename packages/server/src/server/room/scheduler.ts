@@ -312,6 +312,23 @@ function handleInterjectionQueued(
     decidedAt: null,
   });
   record.updatedAt = event.at;
+  // An interjection in closing sends the room back to discussing (design §3.1).
+  // Any turn was already cancelled when the room began closing.
+  if (record.status === "closing") {
+    record.status = "discussing";
+    record.turn = {
+      index: record.turn.index,
+      memberId: null,
+      agentId: null,
+      turnId: null,
+      status: "idle",
+      startedAt: null,
+      deadlineAt: null,
+      attempt: 0,
+    };
+    record.pendingCheckpoint = "interjection";
+    return [{ type: "ask_moderator", checkpoint: "interjection" }];
+  }
   // Never interrupt the current speaker; the moderator decides at the next checkpoint.
   // An interrupted or closed room has no checkpoint to decide at.
   if (record.status !== "discussing" || record.turn.status !== "idle") {
@@ -477,6 +494,9 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
     }
 
     case "moderator_summary_ready": {
+      // A late summary must not write into a closed room or one sent back to
+      // discussing by an interjection.
+      if (next.status !== "closing") break;
       appendEntry(next, {
         at: event.at,
         kind: "moderator",

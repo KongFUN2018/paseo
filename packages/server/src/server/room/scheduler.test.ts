@@ -299,6 +299,18 @@ describe("RoomScheduler interjections", () => {
     expect(record.turn).toMatchObject({ memberId: "member_1", status: "speaking", attempt: 0 });
   });
 
+  test("an interjection in closing sends the room back to discussing", () => {
+    const closing = makeRecord({ status: "closing", summary: "done" });
+    const { record, results } = run(closing, [
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "再聊聊" },
+    ]);
+
+    expect(results[0]?.commands).toEqual([{ type: "ask_moderator", checkpoint: "interjection" }]);
+    expect(record.status).toBe("discussing");
+    expect(record.pendingCheckpoint).toBe("interjection");
+    expect(record.turn).toMatchObject({ memberId: null, status: "idle" });
+  });
+
   test("asks the moderator immediately when no speaker is active", () => {
     const idle = makeRecord({ status: "discussing" });
     const { results } = run(idle, [
@@ -386,5 +398,26 @@ describe("RoomScheduler budget", () => {
 
     expect(results[0]?.commands).toEqual([{ type: "ask_moderator", checkpoint: "summary" }]);
     expect(final.status).toBe("closing");
+  });
+});
+
+describe("RoomScheduler summary gating", () => {
+  test("applies a summary while the room is closing", () => {
+    const { record } = run(makeRecord({ status: "closing" }), [
+      { type: "moderator_summary_ready", at: AT, summary: "结论" },
+    ]);
+
+    expect(record.summary).toBe("结论");
+    expect(record.status).toBe("closing");
+    expect(record.transcript.at(-1)).toMatchObject({ kind: "moderator", text: "结论" });
+  });
+
+  test("drops a late summary once the room left closing", () => {
+    const { record } = run(makeRecord({ status: "discussing" }), [
+      { type: "moderator_summary_ready", at: AT, summary: "迟到的总结" },
+    ]);
+
+    expect(record.summary).toBeNull();
+    expect(record.transcript).toHaveLength(0);
   });
 });
