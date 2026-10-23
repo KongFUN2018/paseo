@@ -28,6 +28,17 @@ export type RoomTurnStatus = z.infer<typeof RoomTurnStatusSchema>;
 export const RoomCheckpointSchema = z.enum(["opening", "round_end", "interjection", "summary"]);
 export type RoomCheckpoint = z.infer<typeof RoomCheckpointSchema>;
 
+/** Mirrors `AgentUsage` from agent-types.ts (all fields optional on the wire). */
+export const RoomMemberUsageSchema = z.object({
+  inputTokens: z.number().optional(),
+  cachedInputTokens: z.number().optional(),
+  outputTokens: z.number().optional(),
+  totalCostUsd: z.number().optional(),
+  contextWindowMaxTokens: z.number().optional(),
+  contextWindowUsedTokens: z.number().optional(),
+});
+export type RoomMemberUsage = z.infer<typeof RoomMemberUsageSchema>;
+
 export const RoomMemberSchema = z.object({
   id: z.string().min(1),
   agentId: z.string().nullable(),
@@ -39,6 +50,8 @@ export const RoomMemberSchema = z.object({
   joinedAt: z.string(),
   lastDeliveredSeq: z.number().int().nonnegative(),
   turnCount: z.number().int().nonnegative(),
+  // Last usage snapshot read live from AgentManager; not persisted on disk.
+  lastUsage: RoomMemberUsageSchema.optional(),
 });
 export type RoomMember = z.infer<typeof RoomMemberSchema>;
 

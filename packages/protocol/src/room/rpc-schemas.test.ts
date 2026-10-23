@@ -67,7 +67,10 @@ describe("room protocol", () => {
         name: "评审",
         topic: "选题",
         moderator: { provider: "claude", model: "claude-opus-5-5", modeId: null },
-        members: [{ provider: "codex", model: "gpt-5.1", persona: "运维视角" }],
+        members: [
+          { provider: "codex", model: "gpt-5.1", persona: "运维视角" },
+          { provider: "claude", model: "claude-opus-5-5", persona: "可靠性视角" },
+        ],
         artifactPath: ".paseo/rooms/x/summary.md",
         limits: { maxRounds: 6 },
       },
@@ -155,6 +158,40 @@ describe("room protocol", () => {
         },
       }),
     ).toMatchObject({ payload: { features: { room: true } } });
+  });
+});
+
+describe("room member count", () => {
+  const createRequest = (members: unknown[]) => ({
+    type: "room.create.request",
+    requestId: "r-count",
+    workspaceId: "ws_1",
+    name: "评审",
+    topic: "选题",
+    moderator: { provider: "claude" },
+    members,
+    artifactPath: ".paseo/rooms/x/summary.md",
+  });
+  const member = { provider: "codex", persona: "p" };
+
+  test("rejects a room with a single member", () => {
+    expect(() => SessionInboundMessageSchema.parse(createRequest([member]))).toThrow();
+  });
+
+  test("rejects a room with five members", () => {
+    expect(() =>
+      SessionInboundMessageSchema.parse(createRequest([member, member, member, member, member])),
+    ).toThrow();
+  });
+
+  test("accepts a room with two members", () => {
+    const request = createRequest([member, member]);
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  });
+
+  test("accepts a room with four members", () => {
+    const request = createRequest([member, member, member, member]);
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
   });
 });
 

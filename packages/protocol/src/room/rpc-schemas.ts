@@ -29,7 +29,7 @@ export const RoomCreateRequestSchema = z.object({
   name: z.string().min(1),
   topic: z.string(),
   moderator: RoomModeratorInputSchema,
-  members: z.array(RoomMemberInputSchema).min(1),
+  members: z.array(RoomMemberInputSchema).min(2).max(4),
   artifactPath: z.string().min(1),
   limits: RoomLimitsInputSchema.optional(),
 });
@@ -151,5 +151,7 @@ export const RoomUpdateMessageSchema = z.object({
   type: z.literal("room_update"),
   payload: z.object({
     room: RoomRecordSchema,
+    // True when the transcript was truncated for the wire (design §8.3).
+    truncated: z.boolean().optional(),
   }),
 });
