@@ -22,6 +22,7 @@ export type RoomEvent =
       turnId?: string | null;
     }
   | { type: "member_turn_failed"; at: string; memberId: string; reason: string }
+  | { type: "member_added"; at: string; memberId: string }
   | { type: "interjection_queued"; at: string; interjectionId: string; text: string }
   | {
       type: "moderator_checkpoint_ready";
@@ -42,6 +43,7 @@ export type ModeratorAction = "continue" | "reorder" | "skip" | "finish" | "answ
 
 export type RoomCommand =
   | { type: "create_members" }
+  | { type: "create_member"; memberId: string }
   | { type: "ask_moderator"; checkpoint: RoomCheckpoint }
   | { type: "prompt_member"; memberId: string; attempt: number }
   | { type: "cancel_agent"; memberId: string };
@@ -188,6 +190,8 @@ function handleFailure(
   memberId: string,
   reason: string,
 ): RoomCommand[] {
+  // Failures only settle while the room is actively discussing.
+  if (record.status !== "discussing") return [];
   const member = findMember(record, memberId);
   if (!member) return [];
   const attempt = record.turn.attempt + 1;
@@ -240,6 +244,17 @@ function pendingInterjections(record: RoomRecord) {
   return record.interjections.filter((interjection) => interjection.status === "queued");
 }
 
+function appendRoundMarker(record: RoomRecord, at: string, roundIndex: number): void {
+  appendEntry(record, {
+    at,
+    kind: "system",
+    memberId: null,
+    agentId: null,
+    text: `round:${roundIndex}`,
+    turnId: null,
+  });
+}
+
 function handleOpeningReady(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "moderator_opening_ready" }>,
@@ -257,6 +272,7 @@ function handleOpeningReady(
   record.status = "discussing";
   record.round = { index: 1, remainingMemberIds: turnOrder(record) };
   record.pendingCheckpoint = null;
+  appendRoundMarker(record, event.at, record.round.index);
   const first = isValidMemberId(record, event.nextMemberId)
     ? event.nextMemberId
     : (record.round.remainingMemberIds[0] ?? null);
@@ -271,6 +287,8 @@ function handleTurnCompleted(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "member_turn_completed" }>,
 ): RoomCommand[] {
+  // A late turn event from a cancelled run must not advance a paused or closed room.
+  if (record.status !== "discussing") return [];
   const member = findMember(record, event.memberId);
   if (!member) return [];
   appendEntry(record, {
@@ -281,6 +299,8 @@ function handleTurnCompleted(
     text: event.text,
     turnId: event.turnId ?? null,
   });
+  // The catch-up first turn doubles as the completion signal (design §7.5).
+  member.catchUpPending = false;
   member.lastDeliveredSeq = record.lastSeq;
   member.turnCount += 1;
   member.status = "ready";
@@ -290,6 +310,31 @@ function handleTurnCompleted(
     return [{ type: "ask_moderator", checkpoint: "round_end" }];
   }
   return startNextTurn(record, event.at, null);
+}
+
+function handleMemberAdded(
+  record: RoomRecord,
+  event: Extract<RoomEvent, { type: "member_added" }>,
+): RoomCommand[] {
+  // Members only join an active discussion (or an interrupted one, where the
+  // join takes effect after resume via the remaining queue; design §7.3).
+  if (record.status !== "discussing" && record.status !== "interrupted") return [];
+  const member = findMember(record, event.memberId);
+  if (!member) return [];
+  const displayName = member.displayName ?? member.id;
+  const personaDigest =
+    member.persona.length > 60 ? `${member.persona.slice(0, 60)}…` : member.persona;
+  appendEntry(record, {
+    at: event.at,
+    kind: "system",
+    memberId: member.id,
+    agentId: member.agentId,
+    text: `成员 ${displayName}（${member.provider}/${member.model ?? "default"}，${personaDigest}）加入房间，将在本轮队尾发言`,
+    turnId: null,
+  });
+  record.round.remainingMemberIds.push(member.id);
+  record.updatedAt = event.at;
+  return [{ type: "create_member", memberId: member.id }];
 }
 
 function handleInterjectionQueued(
@@ -408,6 +453,7 @@ function handleCheckpoint(
       return beginClosing(record, event.at, `Budget exhausted: ${budgetReason}`);
     }
     record.round = nextRound;
+    appendRoundMarker(record, event.at, record.round.index);
     return startNextTurn(record, event.at, event.nextMemberId ?? null);
   }
 
@@ -442,16 +488,16 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
       break;
     }
 
-    case "member_turn_completed": {
-      // A late turn event from a cancelled run must not advance a paused or closed room.
-      if (next.status !== "discussing") break;
+    case "member_turn_completed":
       commands.push(...handleTurnCompleted(next, event));
       break;
-    }
 
-    case "member_turn_failed": {
-      if (next.status !== "discussing") break;
+    case "member_turn_failed":
       commands.push(...handleFailure(next, event.at, event.memberId, event.reason));
+      break;
+
+    case "member_added": {
+      commands.push(...handleMemberAdded(next, event));
       break;
     }
 

@@ -13,6 +13,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "../agent/agent-manager.js";
 import { AgentStorage } from "../agent/agent-storage.js";
 import type {
+  AgentCapabilityFlags,
   AgentClient,
   AgentSession,
   AgentSessionConfig,
@@ -20,6 +21,7 @@ import type {
 } from "../agent/agent-sdk-types.js";
 import { RoomService, type CreateRoomInput } from "./service.js";
 import { RoomStore } from "./store.js";
+import { MOCK_SLOW_PROVIDER_ID } from "../agent/providers/mock-slow-provider.js";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -49,6 +51,17 @@ async function waitForRoom(
   }
 }
 
+/** Poll until the probe returns a truthy value; returns that value. */
+async function waitFor<T>(probe: () => T | null | undefined, timeoutMs = 8000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error("timed out waiting for condition");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+}
+
 function hasMemberUsage(updates: SessionOutboundMessage[]): boolean {
   for (const update of updates) {
     if (update.type !== "room_update") continue;
@@ -57,6 +70,34 @@ function hasMemberUsage(updates: SessionOutboundMessage[]): boolean {
     }
   }
   return false;
+}
+
+/** Transcript predicates for waitForRoom, kept top-level to limit nesting. */
+function hasMemberEntry(room: { transcript: Array<{ kind: string }> }): boolean {
+  return room.transcript.some((entry) => entry.kind === "member");
+}
+
+function hasTwoMemberEntries(room: { transcript: Array<{ kind: string }> }): boolean {
+  return room.transcript.filter((entry) => entry.kind === "member").length >= 2;
+}
+
+function hasJoinerStatement(room: {
+  transcript: Array<{ kind: string; memberId?: string | null; text: string }>;
+}): boolean {
+  return room.transcript.some(
+    (entry) => entry.kind === "member" && entry.memberId === "member_1" && entry.text === "补充B",
+  );
+}
+
+/** Partial pushes for one member, in arrival order. */
+function partialUpdatesFor(
+  updates: SessionOutboundMessage[],
+  memberId: string,
+): Array<Extract<SessionOutboundMessage, { type: "room_partial_update" }>> {
+  return updates.filter(
+    (update): update is Extract<SessionOutboundMessage, { type: "room_partial_update" }> =>
+      update.type === "room_partial_update" && update.payload.memberId === memberId,
+  );
 }
 
 function hasSystemEntry(room: { transcript: Array<{ kind: string; text: string }> }): boolean {
@@ -76,25 +117,44 @@ const CAPABILITIES = {
 } as const;
 
 function memberIdFromPrompt(config: AgentSessionConfig): string | null {
-  const match = /You are member (member_\d+)/.exec(config.systemPrompt ?? "");
-  return match?.[1] ?? null;
+  const systemPrompt = config.systemPrompt ?? "";
+  // v2 system prompt (design §5.3) first, then the legacy v1 wording.
+  return (
+    /名字：(member_\d+)/.exec(systemPrompt)?.[1] ??
+    /You are member (member_\d+)/.exec(systemPrompt)?.[1] ??
+    null
+  );
+}
+
+function isMemberTurnPrompt(prompt: string): boolean {
+  // v2 turn marker (design §5.4) or the legacy v1 marker.
+  return prompt.includes("[第 1 轮｜第 0 个 turn]") || prompt.includes("[round 1 | turn 0]");
 }
 
 /** Scripted session: moderator answers JSON, members answer a fixed statement. */
 class ScriptedRoomSession implements AgentSession {
-  readonly provider = "codex" as const;
-  readonly capabilities = CAPABILITIES;
+  readonly provider: string;
+  readonly capabilities: AgentCapabilityFlags;
   readonly id = randomUUID();
+  readonly prompts: string[] = [];
   interruptCount = 0;
   private turnCounter = 0;
   turnStarted = false;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
-  private readonly memberId: string | null;
+  readonly memberId: string | null;
 
   constructor(
     private readonly config: AgentSessionConfig,
     private readonly holdTurn: Deferred<void> | null,
+    private readonly streaming: boolean,
+    private readonly failMemberTurns: boolean,
+    provider: string,
+    capabilities: AgentCapabilityFlags,
   ) {
+    this.provider = provider as AgentSession["provider"];
+    // The manager stamps the agent record from session capabilities, so the
+    // client's flag set must flow through here.
+    this.capabilities = capabilities;
     this.memberId = memberIdFromPrompt(config);
   }
 
@@ -104,15 +164,62 @@ class ScriptedRoomSession implements AgentSession {
 
   async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
     this.turnStarted = true;
+    this.prompts.push(typeof prompt === "string" ? prompt : "");
     const turnId = `turn-${this.id}-${++this.turnCounter}`;
     const text = typeof prompt === "string" ? prompt : "";
     void (async () => {
       // Defer like real providers: events must arrive after the manager's waiter is set up.
       await new Promise((resolveTick) => setTimeout(resolveTick, 0));
-      if (this.holdTurn && text.includes("[round 1 | turn 0]")) {
+      if (this.holdTurn && isMemberTurnPrompt(text)) {
         await this.holdTurn.promise;
       }
       this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+      if (this.streaming && this.memberId) {
+        if (this.failMemberTurns) {
+          // Member turns fail on every attempt (scheduler retries once).
+          this.pushEvent({
+            type: "turn_failed",
+            provider: this.provider,
+            error: "provider exploded",
+            turnId,
+          });
+          return;
+        }
+        // Choreographed member turn: text, a tool call (resets the partial
+        // buffer), then text again after one 300ms-cycle flush window.
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          item: { type: "assistant_message", text: "结论A" },
+        });
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          item: {
+            type: "tool_call",
+            status: "completed",
+            callId: `call-${this.id}-${this.turnCounter}`,
+            name: "read_file",
+            detail: { type: "read", filePath: "notes/api.md" },
+            error: null,
+          },
+        });
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 450));
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          item: { type: "assistant_message", text: "补充B" },
+        });
+        this.pushEvent({
+          type: "turn_completed",
+          provider: this.provider,
+          turnId,
+          usage: { inputTokens: 100, outputTokens: 50 },
+        });
+        return;
+      }
       this.pushEvent({
         type: "timeline",
         provider: this.provider,
@@ -191,15 +298,29 @@ class ScriptedRoomSession implements AgentSession {
 }
 
 class ScriptedRoomClient implements AgentClient {
-  readonly provider = "codex" as const;
-  readonly capabilities = CAPABILITIES;
+  readonly provider: string;
+  readonly capabilities: typeof CAPABILITIES;
   readonly configs: AgentSessionConfig[] = [];
   readonly sessions: ScriptedRoomSession[] = [];
 
   constructor(
     private readonly logger: pino.Logger,
     private readonly holdTurn: Deferred<void> | null,
-  ) {}
+    options?: {
+      provider?: string;
+      capabilities?: Partial<typeof CAPABILITIES>;
+      streaming?: boolean;
+      failMemberTurns?: boolean;
+    },
+  ) {
+    this.provider = options?.provider ?? "codex";
+    this.capabilities = { ...CAPABILITIES, ...options?.capabilities };
+    this.streaming = options?.streaming ?? false;
+    this.failMemberTurns = options?.failMemberTurns ?? false;
+  }
+
+  private readonly streaming: boolean;
+  private readonly failMemberTurns: boolean;
 
   async isAvailable(): Promise<boolean> {
     return true;
@@ -207,7 +328,14 @@ class ScriptedRoomClient implements AgentClient {
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     this.configs.push(config);
-    const session = new ScriptedRoomSession(config, this.holdTurn);
+    const session = new ScriptedRoomSession(
+      config,
+      this.holdTurn,
+      this.streaming,
+      this.failMemberTurns,
+      this.provider,
+      this.capabilities,
+    );
     this.sessions.push(session);
     return session;
   }
@@ -237,16 +365,35 @@ describe("RoomService with a scripted provider", () => {
     cleanup.length = 0;
   });
 
-  async function buildService(holdTurn: Deferred<void> | null) {
+  async function buildService(
+    holdTurn: Deferred<void> | null,
+    options?: {
+      streaming?: boolean;
+      withNonPersistentProvider?: boolean;
+      failMemberTurns?: boolean;
+    },
+  ) {
     workDir = await mkdtemp(join(tmpdir(), "room-service-ws-"));
     roomsDir = await mkdtemp(join(tmpdir(), "room-service-rooms-"));
     agentsDir = await mkdtemp(join(tmpdir(), "room-service-agents-"));
     logger = createTestLogger();
     const storage = new AgentStorage(agentsDir, logger);
     await storage.initialize();
-    const client = new ScriptedRoomClient(logger, holdTurn);
+    const client = new ScriptedRoomClient(logger, holdTurn, {
+      streaming: options?.streaming,
+      failMemberTurns: options?.failMemberTurns,
+    });
+    const clients: Record<string, AgentClient> = { codex: client };
+    if (options?.withNonPersistentProvider) {
+      // Mirrors mock-slow-provider (supportsSessionPersistence: false) without
+      // the PASEO_ENABLE_MOCK_SLOW env gate.
+      clients[MOCK_SLOW_PROVIDER_ID] = new ScriptedRoomClient(logger, null, {
+        provider: MOCK_SLOW_PROVIDER_ID,
+        capabilities: { supportsSessionPersistence: false },
+      });
+    }
     const agentManager = new AgentManager({
-      clients: { codex: client },
+      clients,
       logger,
       registry: storage,
     });
@@ -368,7 +515,12 @@ describe("RoomService with a scripted provider", () => {
     ).toBe(true);
 
     gate.resolve();
-    const closing = await waitForRoom(service, room.id, (current) => current.status === "closing");
+    // Wait through the summary so cleanup does not race in-flight writes.
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
     expect(closing.interjections[0]?.status).toBe("queued");
   });
 
@@ -565,6 +717,211 @@ describe("RoomService with a scripted provider", () => {
     const failed = await waitForRoom(service, room.id, hasSystemEntry);
     expect(failed.members[0]?.status).toBe("failed");
     gate.resolve();
+    // Let the room reach its resting state so cleanup does not race in-flight writes.
+    await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+  });
+
+  test("adds members mid-discussion up to four and rejects the fifth", async () => {
+    const { service, client } = await buildService(null);
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    const joined = await service.addMember(room.id, {
+      provider: "codex",
+      persona: "性能",
+      displayName: "性能",
+      roleId: "backend",
+    });
+    expect(joined.members).toHaveLength(4);
+    expect(joined.members[3]).toMatchObject({
+      id: "member_4",
+      status: "ready",
+      displayName: "性能",
+      roleId: "backend",
+      catchUpPending: true,
+    });
+    expect(joined.members[3]?.agentId).toBeTruthy();
+    // Caught up to the pre-join lastSeq; the join marker itself lands after
+    // the snapshot and reaches the joiner through the normal delta.
+    expect(joined.members[3]?.lastDeliveredSeq).toBe(joined.lastSeq - 1);
+    // Persistent join marker written by the scheduler; the joiner goes to the tail.
+    expect(joined.transcript.at(-1)).toMatchObject({ kind: "system", memberId: "member_4" });
+    expect(joined.transcript.at(-1)?.text).toContain("成员 性能");
+    expect(joined.round.remainingMemberIds).toContain("member_4");
+
+    await expect(
+      service.addMember(room.id, { provider: "codex", persona: "第五人" }),
+    ).rejects.toThrow(/maximum is 4/);
+
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    // The joiner spoke at least its catch-up turn (which round it lands in
+    // depends on when the join is applied relative to the scripted rotation).
+    expect(closing.members[3]?.turnCount).toBeGreaterThanOrEqual(1);
+    expect(closing.members[3]?.catchUpPending).toBeFalsy();
+    // Moderator + 3 initial members + exactly one probe agent for the joiner.
+    expect(client.configs).toHaveLength(5);
+  });
+
+  test("a joiner without session persistence is rejected before touching the roster", async () => {
+    const { service, client } = await buildService(null, { withNonPersistentProvider: true });
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    await expect(
+      service.addMember(room.id, { provider: MOCK_SLOW_PROVIDER_ID, persona: "压测" }),
+    ).rejects.toThrow(/session persistence/);
+
+    const { room: after } = await service.get(room.id);
+    expect(after?.members).toHaveLength(3);
+    expect(
+      after?.transcript.some((entry) => entry.kind === "system" && entry.text.includes("加入房间")),
+    ).toBe(false);
+    // The probe agent never joined: no extra agent beyond moderator + 3 members.
+    expect(client.configs).toHaveLength(4);
+    // The room still runs to its scripted end.
+    await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+  });
+
+  test("a mid-room joiner runs a catch-up first turn with the full transcript", async () => {
+    const { service, client } = await buildService(null);
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+    await waitForRoom(service, room.id, hasMemberEntry);
+    await service.interject(room.id, "插话一下");
+
+    await service.addMember(room.id, {
+      provider: "codex",
+      persona: "安全",
+      displayName: "安全",
+    });
+
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    const joiner = closing.members.find((member) => member.id === "member_4");
+    expect(joiner?.turnCount).toBeGreaterThanOrEqual(1);
+    expect(joiner?.catchUpPending).toBeFalsy();
+
+    // The joiner's displayName replaces the member id in the system prompt,
+    // so select its session by the catch-up marker instead of by id.
+    const joinerSession = client.sessions.find((session) =>
+      session.prompts[0]?.includes("[catch-up｜"),
+    );
+    const catchupPrompt = joinerSession?.prompts[0];
+    expect(catchupPrompt).toContain("[catch-up｜你刚加入聊天室「架构评审」]");
+    expect(catchupPrompt).toContain("全部历史发言（按时间顺序）");
+    // Humanized transcript: every entry type is present with speaker names.
+    expect(catchupPrompt).toContain("- 主持人: 开场白");
+    expect(catchupPrompt).toContain("statement from member_1");
+    expect(catchupPrompt).toContain("- 用户插话: 插话一下");
+    // The file manifest section renders the empty-room placeholder.
+    expect(catchupPrompt).toContain("房间产出物（可用你的文件工具读取）");
+    expect(catchupPrompt).toContain("（还没有产出物。）");
+  });
+
+  test("an over-budget catch-up asks the moderator for a digest", async () => {
+    const { service, client } = await buildService(null);
+    const room = await service.create({ ...createInput(), limits: { deltaCharBudget: 60 } });
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+    // Opening plus two statements push the humanized transcript past 60 chars.
+    await waitForRoom(service, room.id, hasTwoMemberEntries);
+
+    await service.addMember(room.id, { provider: "codex", persona: "数据" });
+
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    expect(closing.members[3]?.turnCount).toBeGreaterThanOrEqual(1);
+    const moderatorPrompts = client.sessions
+      .filter((session) => session.memberId === null)
+      .flatMap((session) => session.prompts);
+    expect(
+      moderatorPrompts.some((prompt) =>
+        prompt.includes("A new member just joined the room and needs a history digest."),
+      ),
+    ).toBe(true);
+    const history = client.sessions
+      .find((session) => session.prompts[0]?.includes("[catch-up｜"))
+      ?.prompts[0]?.split("全部历史发言（按时间顺序）：\n")[1]
+      ?.split("\n\n房间产出物")[0];
+    // Digest body first, then exactly the newest half-budget (30 chars) slice
+    // of the transcript — older content is dropped.
+    expect(history?.startsWith("statement from member\n\n")).toBe(true);
+    expect(history?.length).toBe("statement from member\n\n".length + 30);
+  });
+
+  test("member turns stream partial updates and settle with done", async () => {
+    const { service, updates } = await buildService(null, { streaming: true });
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    const findDonePartial = (messages: SessionOutboundMessage[]) =>
+      messages.find((update) => update.type === "room_partial_update" && update.payload.done);
+    const donePartial = await waitFor(() =>
+      findDonePartial(partialUpdatesFor(updates, "member_1")),
+    );
+    const texts = partialUpdatesFor(updates, "member_1").map((update) => update.payload.text);
+    // First visible char flushes immediately, the tool call resets the buffer,
+    // the final segment flushes on the 300ms cadence, then exactly one done.
+    expect(texts[0]).toBe("结论A");
+    expect(texts).toContain("");
+    expect(texts.at(-1)).toBe("补充B");
+    expect(donePartial.payload.text).toBe("补充B");
+    expect(donePartial.payload.toolCalls).toBe(1);
+    expect(donePartial.payload.roomId).toBe(room.id);
+
+    // The authoritative transcript entry lands right after the done flush.
+    const settled = await waitForRoom(service, room.id, hasJoinerStatement);
+    const statement = settled.transcript.findLast(
+      (entry) => entry.kind === "member" && entry.memberId === "member_1",
+    );
+    expect(statement?.text).toBe("补充B");
+  });
+
+  test("a failed member turn still flushes a terminal done partial", async () => {
+    const { service, updates } = await buildService(null, {
+      streaming: true,
+      failMemberTurns: true,
+    });
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    // member_1 fails on both attempts: retry, then the scheduler fails it.
+    await waitForRoom(service, room.id, (current) => current.members[0]?.status === "failed");
+
+    const partials = partialUpdatesFor(updates, "member_1");
+    expect(partials.length).toBeGreaterThanOrEqual(1);
+    // Every attempt ends with exactly one terminal flush closing the stream row;
+    // a failing turn never streams intermediate text.
+    expect(partials.every((update) => update.payload.done)).toBe(true);
+    expect(partials.at(-1)?.payload.done).toBe(true);
+    // A failed turn leaves no statement in the transcript.
+    const { room: after } = await service.get(room.id);
+    expect(
+      after?.transcript.some((entry) => entry.kind === "member" && entry.memberId === "member_1"),
+    ).toBe(false);
     // Let the room reach its resting state so cleanup does not race in-flight writes.
     await waitForRoom(
       service,

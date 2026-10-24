@@ -168,6 +168,10 @@ const INBOUND_PERMISSION = {
   "room.interject.request": "workspace.write",
   "room.close.request": "workspace.write",
   "room.reopen.request": "workspace.write",
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  "room.member.add.request": "workspace.write",
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  "room.files.list.request": "workspace.read",
   "schedule/create": "automation.manage",
   "schedule/delete": "automation.manage",
   "schedule/inspect": "automation.manage",
@@ -403,6 +407,12 @@ const OUTBOUND_PERMISSION = {
   "room.close.response": "workspace.write",
   "room.reopen.response": "workspace.write",
   room_update: "workspace.read",
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  "room.member.add.response": "workspace.write",
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  "room.files.list.response": "workspace.read",
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  room_partial_update: "workspace.read",
   "schedule/create/response": "automation.manage",
   "schedule/delete/response": "automation.manage",
   "schedule/inspect/response": "automation.manage",

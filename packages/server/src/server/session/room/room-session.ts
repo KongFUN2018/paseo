@@ -53,6 +53,8 @@ export class RoomSession {
             model: member.model ?? null,
             modeId: member.modeId ?? null,
             persona: member.persona,
+            ...(member.displayName ? { displayName: member.displayName } : {}),
+            ...(member.roleId ? { roleId: member.roleId } : {}),
           })),
           artifactPath: request.artifactPath,
           limits: request.limits,
@@ -129,6 +131,31 @@ export class RoomSession {
         this.host.emit({
           type: "room.reopen.response",
           payload: { requestId: request.requestId, room, error: null },
+        });
+        return;
+      }
+      // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+      case "room.member.add.request": {
+        const room = await service.addMember(request.roomId, {
+          provider: request.member.provider,
+          model: request.member.model ?? null,
+          modeId: request.member.modeId ?? null,
+          persona: request.member.persona,
+          displayName: request.member.displayName,
+          roleId: request.member.roleId,
+        });
+        this.host.emit({
+          type: "room.member.add.response",
+          payload: { requestId: request.requestId, room, error: null },
+        });
+        return;
+      }
+      // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+      case "room.files.list.request": {
+        const files = await service.listFiles(request.roomId);
+        this.host.emit({
+          type: "room.files.list.response",
+          payload: { requestId: request.requestId, error: null, files },
         });
         return;
       }

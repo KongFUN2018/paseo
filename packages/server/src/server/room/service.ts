@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type pino from "pino";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import {
@@ -11,18 +11,28 @@ import {
 } from "@getpaseo/protocol/room/types";
 import { ROOM_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
-import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
+import type { AgentSessionConfig, AgentTimelineItem } from "../agent/agent-sdk-types.js";
 import {
+  buildCatchupSummaryPrompt,
+  buildCatchupTurnPrompt,
   buildCheckpointPrompt,
+  buildHumanizedTranscript,
   buildMemberSystemPrompt,
   buildMemberTurnPrompt,
   buildModeratorSystemPrompt,
   buildOpeningPrompt,
+  buildRosterText,
   buildSummaryPrompt,
   fallbackOpening,
   parseModeratorDecision,
   parseModeratorOpening,
 } from "./prompt.js";
+import {
+  assertInsideWorkspaceDirectory,
+  formatRoomFilesManifest,
+  listRoomFiles,
+  type RoomFileEntry,
+} from "./files.js";
 import { RoomStore } from "./store.js";
 import { stepRoomScheduler, type RoomCommand, type RoomEvent } from "./scheduler.js";
 import { writeRoomArtifact } from "./artifact.js";
@@ -31,10 +41,32 @@ import { writeRoomArtifact } from "./artifact.js";
 const WIRE_TRANSCRIPT_LIMIT = 2000;
 const WIRE_TRANSCRIPT_TAIL = 500;
 
+/** Partial push throttle (design §6.4). */
+const PARTIAL_FLUSH_INTERVAL_MS = 300;
+const PARTIAL_TEXT_MAX_CHARS = 8000;
+/** room_update latency probe threshold (design §12 risk 1). */
+const ROOM_UPDATE_DELAY_WARN_MS = 500;
+
+/**
+ * Workspace-relative parent of the summary artifact: the room files root every
+ * member writes its own subdirectory into (design §8.1).
+ */
+function roomFilesDirOf(artifactPath: string): string {
+  const segments = artifactPath.split(/[/\\]/u);
+  segments.pop();
+  return segments.length > 0 ? segments.join("/") : ".";
+}
+
 /** The slice of AgentManager the room service is allowed to touch. */
 export type RoomAgentManager = Pick<
   AgentManager,
-  "createAgent" | "runAgent" | "cancelAgentRun" | "archiveAgent" | "unarchiveSnapshot" | "getAgent"
+  | "createAgent"
+  | "runAgent"
+  | "streamAgent"
+  | "cancelAgentRun"
+  | "archiveAgent"
+  | "unarchiveSnapshot"
+  | "getAgent"
 >;
 
 export interface CreateRoomInput {
@@ -47,9 +79,20 @@ export interface CreateRoomInput {
     model?: string | null;
     modeId?: string | null;
     persona: string;
+    displayName?: string;
+    roleId?: string;
   }>;
   artifactPath: string;
   limits?: Partial<RoomLimits>;
+}
+
+export interface AddRoomMemberInput {
+  provider: string;
+  model?: string | null;
+  modeId?: string | null;
+  persona: string;
+  displayName?: string;
+  roleId?: string;
 }
 
 /** On reopen a member goes back to ready when its agent survived the archive. */
@@ -76,6 +119,8 @@ export class RoomService {
   private readonly chains = new Map<string, Promise<unknown>>();
   private readonly turnTimers = new Map<string, NodeJS.Timeout>();
   private readonly latest = new Map<string, RoomRecord>();
+  /** Last room files fingerprint per room for the turn-prompt diff (design §8.2). */
+  private readonly roomFilesSnapshots = new Map<string, string>();
   private readonly now: () => Date;
 
   constructor(private readonly options: RoomServiceOptions) {
@@ -112,7 +157,9 @@ export class RoomService {
       name: input.name,
       topic: input.topic,
       status: "forming",
-      promptVersion: 1,
+      // New rooms speak the v2 prompt contract; rooms on disk keep v1 and the
+      // legacy templates (design §5.3, 功能2 §7.1).
+      promptVersion: 2,
       moderator: {
         agentId: null,
         provider: input.moderator.provider,
@@ -130,6 +177,8 @@ export class RoomService {
         joinedAt: at,
         lastDeliveredSeq: 0,
         turnCount: 0,
+        ...(member.displayName ? { displayName: member.displayName } : {}),
+        ...(member.roleId ? { roleId: member.roleId } : {}),
       })),
       turn: {
         index: 0,
@@ -224,6 +273,96 @@ export class RoomService {
     });
   }
 
+  /**
+   * Mid-room member join (design §7.2). Runs in the per-room queue; the
+   * persistence-capability probe happens BEFORE any roster change so a
+   * provider that cannot persist never leaves a failed seat behind.
+   */
+  async addMember(roomId: string, input: AddRoomMemberInput): Promise<RoomRecord> {
+    return this.serialize(roomId, async () => {
+      const record = await this.requireRoom(roomId);
+      if (record.status !== "discussing" && record.status !== "interrupted") {
+        throw new Error(
+          `Room is ${record.status}; members can only join while discussing or interrupted`,
+        );
+      }
+      if (record.members.length >= 4) {
+        throw new Error(`Room already has ${record.members.length} members; the maximum is 4`);
+      }
+      const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
+      if (!workspaceDirectory) {
+        throw new Error(`Workspace ${record.workspaceId} not found`);
+      }
+      // Member ids are monotonic and members are never removed, so the id is
+      // deterministic before the probe; the system prompt bakes it in.
+      const memberId = `member_${record.members.length + 1}`;
+      const draft: RoomMember = {
+        id: memberId,
+        agentId: null,
+        provider: input.provider,
+        model: input.model ?? null,
+        modeId: input.modeId ?? null,
+        persona: input.persona,
+        status: "pending",
+        joinedAt: this.stamp(),
+        lastDeliveredSeq: record.lastSeq,
+        turnCount: 0,
+        ...(input.displayName ? { displayName: input.displayName } : {}),
+        ...(input.roleId ? { roleId: input.roleId } : {}),
+        catchUpPending: true,
+      };
+      const agent = await this.options.agentManager.createAgent(
+        this.memberConfig(
+          draft,
+          workspaceDirectory,
+          buildMemberSystemPrompt({
+            promptVersion: record.promptVersion,
+            roomName: record.name,
+            member: draft,
+            filesDir: roomFilesDirOf(record.artifactPath),
+          }),
+        ),
+        undefined,
+        {
+          workspaceId: record.workspaceId,
+          labels: { [ROOM_ID_LABEL]: roomId },
+          initialTitle: `Room member ${memberId} · ${record.name}`,
+        },
+      );
+      if (!agent.capabilities.supportsSessionPersistence) {
+        // Roll the probe agent back; the roster was never touched.
+        await this.options.agentManager.archiveAgent(agent.id).catch(() => undefined);
+        throw new Error(`Provider ${draft.provider} does not support session persistence`);
+      }
+      const member: RoomMember = { ...draft, agentId: agent.id, status: "ready" };
+      try {
+        return await this.applyStep(
+          { ...record, members: [...record.members, member] },
+          { type: "member_added", at: this.stamp(), memberId },
+        );
+      } catch (error) {
+        // Persisting the roster failed: roll the agent back so nothing leaks.
+        await this.options.agentManager.archiveAgent(agent.id).catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+
+  /** Files of the room's files directory for `room.files.list` (design §8.4). */
+  async listFiles(roomId: string): Promise<RoomFileEntry[]> {
+    const record = await this.store.get(roomId);
+    if (!record) throw new Error(`Room ${roomId} not found`);
+    const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
+    if (!workspaceDirectory) {
+      throw new Error(`Workspace ${record.workspaceId} not found`);
+    }
+    return listRoomFiles({
+      workspaceDirectory,
+      roomFilesDir: roomFilesDirOf(record.artifactPath),
+      memberIds: record.members.map((member) => member.id),
+    });
+  }
+
   async close(roomId: string): Promise<RoomRecord> {
     return this.serialize(roomId, async () => {
       const record = await this.requireRoom(roomId);
@@ -274,11 +413,7 @@ export class RoomService {
     if (segments.some((segment) => segment === "..")) {
       throw new Error("artifactPath must not contain '..' segments");
     }
-    const resolved = resolve(workspaceDirectory, trimmed);
-    const prefix = workspaceDirectory.endsWith(sep) ? workspaceDirectory : workspaceDirectory + sep;
-    if (!resolved.startsWith(prefix)) {
-      throw new Error("artifactPath must stay inside the workspace directory");
-    }
+    assertInsideWorkspaceDirectory(resolve(workspaceDirectory, trimmed), workspaceDirectory);
   }
 
   // ===========================================================================
@@ -291,8 +426,19 @@ export class RoomService {
   }
 
   private async applyDirect(record: RoomRecord, commands: RoomCommand[] = []): Promise<RoomRecord> {
+    const persistStartedAt = Date.now();
     this.latest.set(record.id, record);
     await this.store.update(record.id, () => record);
+    // room_update latency probe (design §12 risk 1): the whole checkpoint
+    // cadence rides on this write finishing before the broadcast, so log
+    // outliers to locate the reported sporadic lag.
+    const persistedMs = Date.now() - persistStartedAt;
+    if (persistedMs >= ROOM_UPDATE_DELAY_WARN_MS) {
+      this.options.logger.warn(
+        { roomId: record.id, persistedMs },
+        "room_update delayed by a slow room store write",
+      );
+    }
     this.broadcast(record);
     for (const command of commands) {
       this.executeCommand(record.id, command);
@@ -308,6 +454,13 @@ export class RoomService {
         case "create_members": {
           const withAgents = await this.ensureAgents(record);
           if (withAgents !== record) await this.applyDirect(withAgents);
+          return;
+        }
+        case "create_member": {
+          // Self-heal / backfill path; the normal addMember flow pre-creates
+          // the agent, so ensureMember is a no-op there (design §7.3).
+          const withAgent = await this.ensureMember(record, command.memberId);
+          if (withAgent !== record) await this.applyDirect(withAgent);
           return;
         }
         case "ask_moderator":
@@ -376,7 +529,12 @@ export class RoomService {
         this.memberConfig(
           member,
           workspaceDirectory,
-          buildMemberSystemPrompt({ roomName: next.name, member }),
+          buildMemberSystemPrompt({
+            promptVersion: next.promptVersion,
+            roomName: next.name,
+            member,
+            filesDir: roomFilesDirOf(next.artifactPath),
+          }),
         ),
         undefined,
         {
@@ -388,6 +546,43 @@ export class RoomService {
       members[index] = { ...member, agentId: agent.id, status: "ready" };
     }
     return { ...next, members };
+  }
+
+  /**
+   * Create the agent for one member that joined mid-room (design §7.3).
+   * Idempotent: members added through addMember already carry an agentId, so
+   * the create_member command skips straight past them.
+   */
+  private async ensureMember(record: RoomRecord, memberId: string): Promise<RoomRecord> {
+    const index = record.members.findIndex((entry) => entry.id === memberId);
+    if (index === -1) return record;
+    const member = record.members[index]!;
+    if (member.agentId) return record;
+    const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
+    if (!workspaceDirectory) {
+      throw new Error(`Workspace ${record.workspaceId} not found`);
+    }
+    const agent = await this.options.agentManager.createAgent(
+      this.memberConfig(
+        member,
+        workspaceDirectory,
+        buildMemberSystemPrompt({
+          promptVersion: record.promptVersion,
+          roomName: record.name,
+          member,
+          filesDir: roomFilesDirOf(record.artifactPath),
+        }),
+      ),
+      undefined,
+      {
+        workspaceId: record.workspaceId,
+        labels: { [ROOM_ID_LABEL]: record.id },
+        initialTitle: `Room member ${member.id} · ${record.name}`,
+      },
+    );
+    const members = [...record.members];
+    members[index] = { ...member, agentId: agent.id, status: "ready" };
+    return { ...record, members };
   }
 
   private memberConfig(
@@ -425,6 +620,7 @@ export class RoomService {
     let prompt = buildCheckpointPrompt({
       round: record.round.index,
       turnCount: record.turn.index,
+      roster: buildRosterText(record),
       recentTranscript: this.recentTranscript(record),
       pendingInterjections: this.pendingInterjectionText(record),
     });
@@ -491,12 +687,7 @@ export class RoomService {
     if (!record || record.status !== "discussing") return;
     const member = record.members.find((entry) => entry.id === memberId);
     if (!member?.agentId) return;
-    const prompt = buildMemberTurnPrompt({
-      record,
-      member,
-      moderatorNote: null,
-      retryReason: record.turn.attempt > 0 ? "previous attempt failed" : null,
-    });
+    const prompt = await this.buildMemberPrompt(record, member);
 
     const timer = setTimeout(() => {
       void this.serializeFeed(roomId, { type: "turn_timeout", at: this.stamp() }).catch(
@@ -505,10 +696,69 @@ export class RoomService {
     }, record.limits.turnTimeoutMs);
     this.turnTimers.set(roomId, timer);
 
+    // Partial streaming state (design §6.2/§6.4). Pure memory: the buffer
+    // always equals the trailing assistant segment, so the settled text
+    // matches getLastAssistantMessageSegmentFromTimeline. Both timers die
+    // with this consumption loop.
+    let partialText = "";
+    let toolCalls = 0;
+    let dirty = false;
+    let firstFlushSent = false;
+    const flushInterval = setInterval(() => {
+      if (!dirty) return;
+      dirty = false;
+      this.sendPartial(roomId, memberId, partialText, toolCalls, false);
+    }, PARTIAL_FLUSH_INTERVAL_MS);
+    const requestPartial = (text: string): void => {
+      partialText = text;
+      dirty = true;
+      if (!firstFlushSent && text.length > 0) {
+        // The first visible character flushes immediately (design §6.4).
+        firstFlushSent = true;
+        dirty = false;
+        this.sendPartial(roomId, memberId, text, toolCalls, false);
+      }
+    };
+
     let event: RoomEvent;
     try {
-      const result = await this.options.agentManager.runAgent(member.agentId, prompt);
-      if (result.canceled) {
+      let canceled = false;
+      const ingestTimelineItem = (item: AgentTimelineItem): void => {
+        if (item.type === "assistant_message") {
+          // Each item text is an incremental chunk of the statement.
+          requestPartial(partialText + item.text);
+          return;
+        }
+        // Reset on any non-assistant item with a non-empty buffer so the
+        // buffer stays the trailing assistant segment; tool calls feed
+        // the researching transient line (design §6.5).
+        if (partialText.length > 0) {
+          requestPartial("");
+        }
+        if (item.type === "tool_call") toolCalls += 1;
+      };
+      try {
+        for await (const streamEvent of this.options.agentManager.streamAgent(
+          member.agentId,
+          prompt,
+        )) {
+          if (streamEvent.type === "timeline") {
+            ingestTimelineItem(streamEvent.item);
+          } else if (streamEvent.type === "turn_failed") {
+            const message = streamEvent.error.trim();
+            throw new Error(message.length > 0 ? message : "Provider run failed");
+          } else if (streamEvent.type === "turn_canceled") {
+            canceled = true;
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+        this.turnTimers.delete(roomId);
+        clearInterval(flushInterval);
+      }
+      // Terminal flush closes the client's streaming row exactly once.
+      this.sendPartial(roomId, memberId, partialText, toolCalls, true);
+      if (canceled) {
         // Whoever cancelled (timeout, pause, close) already settled the scheduler.
         return;
       }
@@ -516,20 +766,134 @@ export class RoomService {
         type: "member_turn_completed",
         at: this.stamp(),
         memberId,
-        text: result.finalText,
+        text: partialText,
       };
     } catch (error) {
+      this.sendPartial(roomId, memberId, partialText, toolCalls, true);
       event = {
         type: "member_turn_failed",
         at: this.stamp(),
         memberId,
         reason: error instanceof Error ? error.message : String(error),
       };
-    } finally {
-      clearTimeout(timer);
-      this.turnTimers.delete(roomId);
     }
     await this.serializeFeed(roomId, event);
+  }
+
+  /**
+   * Turn prompt for a member: catch-up first turn for late joiners, otherwise
+   * the regular turn prompt with the new-files section (design §7.5, §8.2).
+   */
+  private async buildMemberPrompt(record: RoomRecord, member: RoomMember): Promise<string> {
+    if (member.catchUpPending) {
+      return this.buildCatchupPrompt(record);
+    }
+    const newFiles = await this.collectNewFilesSection(record);
+    return buildMemberTurnPrompt({
+      record,
+      member,
+      moderatorNote: null,
+      retryReason: record.turn.attempt > 0 ? "previous attempt failed" : null,
+      newFiles,
+    });
+  }
+
+  /** Catch-up first-turn prompt: full transcript plus the file manifest (§7.5). */
+  private async buildCatchupPrompt(record: RoomRecord): Promise<string> {
+    const transcriptText = buildHumanizedTranscript(record);
+    let history = transcriptText;
+    if (transcriptText.length > record.limits.deltaCharBudget) {
+      history = await this.summarizeTranscriptForCatchup(record, transcriptText);
+    }
+    return buildCatchupTurnPrompt({
+      roomName: record.name,
+      topic: record.topic,
+      transcriptText: history,
+      fileManifest: await this.roomFilesManifest(record),
+    });
+  }
+
+  /**
+   * Over-budget catch-up: a one-shot moderator digest followed by the newest
+   * half-budget slice of the transcript. The digest never enters the room
+   * transcript or the wire (design §7.5).
+   */
+  private async summarizeTranscriptForCatchup(
+    record: RoomRecord,
+    transcriptText: string,
+  ): Promise<string> {
+    const tailChars = Math.floor(record.limits.deltaCharBudget / 2);
+    const tail = transcriptText.slice(Math.max(0, transcriptText.length - tailChars));
+    const moderatorAgentId = record.moderator.agentId;
+    if (!moderatorAgentId) return tail;
+    try {
+      const result = await this.options.agentManager.runAgent(
+        moderatorAgentId,
+        buildCatchupSummaryPrompt(transcriptText),
+      );
+      const summary = result.finalText.trim();
+      return summary.length > 0 ? `${summary}\n\n${tail}` : tail;
+    } catch (error) {
+      this.options.logger.warn(
+        { err: error, roomId: record.id },
+        "Catch-up summary run failed; injecting the transcript tail only",
+      );
+      return tail;
+    }
+  }
+
+  /** Current file manifest for catch-up prompts; listing failures degrade to empty. */
+  private async roomFilesManifest(record: RoomRecord): Promise<string> {
+    const entries = await this.readRoomFiles(record);
+    return formatRoomFilesManifest(entries ?? []);
+  }
+
+  /**
+   * List the room's files and diff against the per-room snapshot; returns the
+   * manifest text only when something changed since the last turn (§8.2).
+   */
+  private async collectNewFilesSection(record: RoomRecord): Promise<string | null> {
+    const entries = await this.readRoomFiles(record);
+    if (!entries) return null;
+    const fingerprint = JSON.stringify(entries);
+    const previous = this.roomFilesSnapshots.get(record.id);
+    this.roomFilesSnapshots.set(record.id, fingerprint);
+    if (previous === fingerprint || entries.length === 0) return null;
+    return formatRoomFilesManifest(entries);
+  }
+
+  private async readRoomFiles(record: RoomRecord): Promise<RoomFileEntry[] | null> {
+    const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
+    if (!workspaceDirectory) return null;
+    try {
+      return await listRoomFiles({
+        workspaceDirectory,
+        roomFilesDir: roomFilesDirOf(record.artifactPath),
+        memberIds: record.members.map((entry) => entry.id),
+      });
+    } catch (error) {
+      this.options.logger.warn(
+        { err: error, roomId: record.id },
+        "Room files listing failed; continuing without the manifest",
+      );
+      return null;
+    }
+  }
+
+  /** Push a `room_partial_update` straight through the broadcast channel (§6.3). */
+  private sendPartial(
+    roomId: string,
+    memberId: string,
+    text: string,
+    toolCalls: number,
+    done: boolean,
+  ): void {
+    const clipped =
+      text.length > PARTIAL_TEXT_MAX_CHARS ? `${text.slice(0, PARTIAL_TEXT_MAX_CHARS)}…` : text;
+    this.options.broadcast({
+      type: "room_partial_update",
+      payload: { roomId, memberId, text: clipped, toolCalls, done },
+    });
   }
 
   private recentTranscript(record: RoomRecord): string {

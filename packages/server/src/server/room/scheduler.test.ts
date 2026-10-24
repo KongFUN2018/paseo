@@ -401,6 +401,99 @@ describe("RoomScheduler budget", () => {
   });
 });
 
+describe("RoomScheduler mid-room joins", () => {
+  const joiner = { ...member("member_4"), catchUpPending: true };
+
+  function recordWithJoiner(base: RoomRecord): RoomRecord {
+    return { ...base, members: [...base.members, joiner] };
+  }
+
+  test("member_added appends the join marker, queues the joiner and returns create_member", () => {
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const result = stepRoomScheduler(recordWithJoiner(opened), {
+      type: "member_added",
+      at: AT,
+      memberId: "member_4",
+    });
+
+    expect(result.commands).toEqual([{ type: "create_member", memberId: "member_4" }]);
+    expect(result.record.round.remainingMemberIds).toContain("member_4");
+    expect(result.record.transcript.at(-1)).toMatchObject({
+      kind: "system",
+      memberId: "member_4",
+    });
+    expect(result.record.transcript.at(-1)?.text).toContain("成员 member_4");
+    expect(result.record.transcript.at(-1)?.text).toContain("将在本轮队尾发言");
+  });
+
+  test("member_added is ignored outside discussing and interrupted", () => {
+    const result = stepRoomScheduler(recordWithJoiner(makeRecord()), {
+      type: "member_added",
+      at: AT,
+      memberId: "member_4",
+    });
+    expect(result.commands).toEqual([]);
+    expect(result.record.transcript).toHaveLength(0);
+    expect(result.record.round.remainingMemberIds).toEqual([]);
+  });
+
+  test("member_added queues the joiner in an interrupted room", () => {
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const paused = stepRoomScheduler(opened, { type: "user_pause", at: AT }).record;
+    const result = stepRoomScheduler(recordWithJoiner(paused), {
+      type: "member_added",
+      at: AT,
+      memberId: "member_4",
+    });
+
+    expect(result.record.status).toBe("interrupted");
+    expect(result.record.round.remainingMemberIds).toContain("member_4");
+    expect(result.commands).toEqual([{ type: "create_member", memberId: "member_4" }]);
+  });
+
+  test("completing the catch-up first turn clears catchUpPending", () => {
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const joined = stepRoomScheduler(recordWithJoiner(opened), {
+      type: "member_added",
+      at: AT,
+      memberId: "member_4",
+    }).record;
+
+    // member_1 is the current speaker; everyone else rotates through, and the
+    // joiner's first (catch-up) turn completes last in the round.
+    const { record } = run(joined, [
+      complete("member_1"),
+      complete("member_2"),
+      complete("member_3"),
+      complete("member_4"),
+    ]);
+
+    expect(record.members[3]?.catchUpPending).toBeFalsy();
+    expect(record.members[3]?.turnCount).toBe(1);
+  });
+});
+
+describe("RoomScheduler round markers", () => {
+  test("writes a round marker at the first round and at every new round", () => {
+    const { record } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      complete("member_1"),
+      complete("member_2"),
+      complete("member_3"),
+      { type: "moderator_checkpoint_ready", at: AT, action: "continue" },
+    ]);
+
+    const markers = record.transcript
+      .filter((entry) => entry.kind === "system" && entry.text.startsWith("round:"))
+      .map((entry) => entry.text);
+    expect(markers).toEqual(["round:1", "round:2"]);
+  });
+});
+
 describe("RoomScheduler summary gating", () => {
   test("applies a summary while the room is closing", () => {
     const { record } = run(makeRecord({ status: "closing" }), [
