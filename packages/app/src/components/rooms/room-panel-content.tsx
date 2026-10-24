@@ -199,6 +199,7 @@ export function RoomPanelContent({ serverId, roomId, onOpenAgent }: RoomPanelCon
         closePending={actions.pendingAction === "close"}
       />
       <RoomInterruptedCard
+        room={room}
         onResume={actions.resumeRoom}
         onClose={confirmAndClose}
         resumePending={actions.pendingAction === "resume"}

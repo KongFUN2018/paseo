@@ -59,7 +59,7 @@ export function RoomClosingCard({
       <View style={styles.actions}>
         <Button
           variant="default"
-          size="sm"
+          size="md"
           onPress={onContinue}
           disabled={closePending}
           testID="room-continue-discussion"
@@ -68,7 +68,7 @@ export function RoomClosingCard({
         </Button>
         <Button
           variant="outline"
-          size="sm"
+          size="md"
           onPress={onClose}
           disabled={closePending}
           loading={closePending}
@@ -82,17 +82,22 @@ export function RoomClosingCard({
 }
 
 export function RoomInterruptedCard({
+  room,
   onResume,
   onClose,
   resumePending,
   closePending,
 }: {
+  room: RoomRecord;
   onResume: () => void;
   onClose: () => void;
   resumePending: boolean;
   closePending: boolean;
 }) {
   const { t } = useTranslation();
+  if (room.status !== "interrupted") {
+    return null;
+  }
   return (
     <View style={styles.card} testID="room-interrupted-card">
       <Text style={styles.cardTitle}>{t("rooms.interrupted.title")}</Text>
@@ -100,7 +105,7 @@ export function RoomInterruptedCard({
       <View style={styles.actions}>
         <Button
           variant="default"
-          size="sm"
+          size="md"
           onPress={onResume}
           disabled={resumePending || closePending}
           loading={resumePending}
@@ -110,7 +115,7 @@ export function RoomInterruptedCard({
         </Button>
         <Button
           variant="outline"
-          size="sm"
+          size="md"
           onPress={onClose}
           disabled={resumePending || closePending}
           loading={closePending}
