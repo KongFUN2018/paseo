@@ -7,6 +7,7 @@ import { StyleSheet } from "react-native-unistyles";
 import type { RoomRecord, RoomStatus } from "@getpaseo/protocol/room/types";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
+import { roomMemberDisplayName } from "@/components/rooms/room-members";
 
 export interface RoomStatusPresentation {
   label: string;
@@ -89,18 +90,48 @@ export function RoomHeader({ room, actions }: { room: RoomRecord; actions: React
 function turnStatusLabel(
   room: RoomRecord,
   speakingMember: RoomRecord["members"][number],
+  streamHasText: boolean,
+  streamDone: boolean,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   if (room.turn.status === "retrying") {
     return t("rooms.panel.retrying", { attempt: room.turn.attempt + 1 });
   }
   if (room.turn.status === "preparing") {
-    return t("rooms.panel.preparing", { name: memberLabel(speakingMember.id) });
+    return t("rooms.panel.preparing", { name: roomMemberDisplayName(speakingMember) });
   }
-  return t("rooms.panel.speaking", { name: memberLabel(speakingMember.id) });
+  if (room.turn.status === "speaking") {
+    // Aligned with the seat state machine: after the terminal flush settles
+    // the stream, the speaker reads as ready instead of flashing "researching"
+    // in the window before the next room_update moves the turn (§12 race).
+    if (streamDone) {
+      return t("rooms.seat.ready");
+    }
+    if (!streamHasText) {
+      return speakingMember.catchUpPending
+        ? t("rooms.panel.readingHistory", { name: roomMemberDisplayName(speakingMember) })
+        : t("rooms.panel.researching", { name: roomMemberDisplayName(speakingMember) });
+    }
+  }
+  return t("rooms.panel.speaking", { name: roomMemberDisplayName(speakingMember) });
 }
 
-export function RoomStatusBar({ room }: { room: RoomRecord }) {
+/**
+ * Seatline under the seats (design §3.1/§6.5): round + live speaker state.
+ * Moderator pointings stay implicit — the wire carries no per-turn pointing
+ * signal, so the seatline only states facts the snapshots prove.
+ */
+export function RoomSeatline({
+  room,
+  streamHasText,
+  streamDone,
+}: {
+  room: RoomRecord;
+  /** Whether the streamed statement of the current speaker already has text. */
+  streamHasText: boolean;
+  /** Whether the terminal flush (done:true) has settled the live stream. */
+  streamDone: boolean;
+}) {
   const { t } = useTranslation();
   const speakingMember = room.members.find((member) => member.id === room.turn.memberId) ?? null;
   const parts: string[] = [];
@@ -108,7 +139,7 @@ export function RoomStatusBar({ room }: { room: RoomRecord }) {
     parts.push(t("rooms.panel.round", { round: room.round.index }));
   }
   if (speakingMember) {
-    parts.push(turnStatusLabel(room, speakingMember, t));
+    parts.push(turnStatusLabel(room, speakingMember, streamHasText, streamDone, t));
   }
   if (room.status === "closing") {
     parts.push(t("rooms.panel.awaitingClose"));
@@ -120,15 +151,10 @@ export function RoomStatusBar({ room }: { room: RoomRecord }) {
     return null;
   }
   return (
-    <Text style={styles.statusBar} testID="room-status-bar">
+    <Text style={styles.statusBar} testID="room-seatline">
       {parts.join(" · ")}
     </Text>
   );
-}
-
-export function memberLabel(memberId: string): string {
-  const match = /^member[_-](\d+)$/.exec(memberId);
-  return match ? `Member ${match[1]}` : memberId;
 }
 
 const styles = StyleSheet.create((theme) => ({

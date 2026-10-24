@@ -99,3 +99,41 @@ export function useRoomQuery(serverId: string, roomId: string, enabled: boolean)
     staleTimeMs: 5_000,
   });
 }
+
+export interface RoomFileEntry {
+  /** Workspace-relative path, inside the room files directory. */
+  path: string;
+  /** Owning member; null means the moderator summary or a room-root file. */
+  memberId: string | null;
+  sizeBytes: number;
+  updatedAtMs: number;
+}
+
+export function roomFilesQueryKey(
+  serverId: string,
+  roomId: string,
+): readonly ["room-files", string, string] {
+  return ["room-files", serverId, roomId] as const;
+}
+
+/**
+ * Room artifacts for the files drawer and the transcript attachment chips
+ * (design §8.3). Fetched when a room panel opens and refreshed whenever the
+ * drawer opens.
+ */
+export function useRoomFilesQuery(serverId: string, roomId: string, enabled: boolean) {
+  return useFetchQuery({
+    queryKey: roomFilesQueryKey(serverId, roomId),
+    enabled,
+    queryFn: async (): Promise<RoomFileEntry[]> => {
+      const client = requireDaemonClient(serverId);
+      const payload = await client.roomFilesList({ roomId });
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+      return payload.files;
+    },
+    dataShape: "list",
+    staleTimeMs: 10_000,
+  });
+}

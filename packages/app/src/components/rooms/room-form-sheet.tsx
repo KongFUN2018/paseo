@@ -11,6 +11,8 @@ import { CombinedModelSelector } from "@/components/combined-model-selector";
 import type { FieldControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { PressHighlight } from "@/components/ui/press-highlight";
+import { DisplayNameInput } from "@/components/rooms/display-name-input";
+import { RolePresetChips } from "@/components/rooms/role-preset-chips";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import {
   SelectField,
@@ -276,6 +278,18 @@ function RoomMemberConfigRow({
     },
     [member.rowId, model],
   );
+  const handleRolePreset = useCallback(
+    (roleId: string | null) => {
+      model.setMemberRolePreset(member.rowId, roleId);
+    },
+    [member.rowId, model],
+  );
+  const handleDisplayName = useCallback(
+    (value: string) => {
+      model.setMemberDisplayName(member.rowId, value);
+    },
+    [member.rowId, model],
+  );
   const handlePersonaChange = useCallback(
     (value: string) => {
       model.setMemberPersona(member.rowId, value);
@@ -312,6 +326,14 @@ function RoomMemberConfigRow({
         onSelect={handleSelect}
         isLoading={isLoading}
         triggerFill
+      />
+      <RolePresetChips selectedRoleId={member.roleId} onSelect={handleRolePreset} />
+      <DisplayNameInput
+        value={member.displayName}
+        onChangeText={handleDisplayName}
+        placeholder={t("rooms.form.displayNamePlaceholder")}
+        size={size}
+        testID={`room-form-member-display-name-${index}`}
       />
       {validation.duplicateCombination ? (
         <Text style={styles.rowError}>{t("rooms.form.errors.memberDuplicate")}</Text>

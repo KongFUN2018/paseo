@@ -1,11 +1,15 @@
 import type { AgentProvider, ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { DEFAULT_ROOM_LIMITS, type RoomLimits } from "@getpaseo/protocol/room/types";
+import { roomRolePresetLabel } from "@/rooms/role-presets";
 
 export interface RoomCreateMemberInput {
   provider: AgentProvider;
   model?: string | null;
   modeId?: string | null;
   persona: string;
+  // COMPAT(roomRefactor): optional wire fields, present only when set.
+  displayName?: string;
+  roleId?: string;
 }
 
 export interface RoomCreateModeratorInput {
@@ -29,6 +33,9 @@ export interface RoomFormMemberDraft {
   provider: AgentProvider | null;
   modelId: string;
   persona: string;
+  // Role preset selection (§5.5); null is the "custom" choice.
+  roleId: string | null;
+  displayName: string;
 }
 
 export interface RoomFormModeratorDraft {
@@ -88,6 +95,8 @@ export interface RoomFormModel {
   addMember(): void;
   removeMember(rowId: string): void;
   setMemberSelection(rowId: string, provider: AgentProvider, modelId: string): void;
+  setMemberRolePreset(rowId: string, roleId: string | null): void;
+  setMemberDisplayName(rowId: string, value: string): void;
   setMemberPersona(rowId: string, value: string): void;
   setModeratorSelection(provider: AgentProvider, modelId: string): void;
   setModeratorMode(modeId: string | null): void;
@@ -227,8 +236,22 @@ export function openRoomForm(): RoomFormModel {
     name: "",
     topic: "",
     members: [
-      { rowId: nextRowId(), provider: null, modelId: "", persona: "" },
-      { rowId: nextRowId(), provider: null, modelId: "", persona: "" },
+      {
+        rowId: nextRowId(),
+        provider: null,
+        modelId: "",
+        persona: "",
+        roleId: null,
+        displayName: "",
+      },
+      {
+        rowId: nextRowId(),
+        provider: null,
+        modelId: "",
+        persona: "",
+        roleId: null,
+        displayName: "",
+      },
     ],
     moderator: { provider: null, modelId: "", modeId: null },
     artifactPath: buildDefaultArtifactPath(""),
@@ -301,7 +324,14 @@ export function openRoomForm(): RoomFormModel {
           ...state,
           members: [
             ...state.members,
-            { rowId: nextRowId(), provider: null, modelId: "", persona: "" },
+            {
+              rowId: nextRowId(),
+              provider: null,
+              modelId: "",
+              persona: "",
+              roleId: null,
+              displayName: "",
+            },
           ],
         }),
       );
@@ -317,6 +347,15 @@ export function openRoomForm(): RoomFormModel {
     },
     setMemberSelection(rowId, provider, modelId) {
       updateMembers(rowId, { provider, modelId });
+    },
+    setMemberRolePreset(rowId, roleId) {
+      // A preset fills the display name with its label; "custom" keeps the
+      // current text so a user switching back keeps what they typed (§5.5).
+      const label = roleId ? roomRolePresetLabel(roleId) : null;
+      updateMembers(rowId, label ? { roleId, displayName: label } : { roleId });
+    },
+    setMemberDisplayName(rowId, value) {
+      updateMembers(rowId, { displayName: value });
     },
     setMemberPersona(rowId, value) {
       updateMembers(rowId, { persona: value });
@@ -355,12 +394,17 @@ export function openRoomForm(): RoomFormModel {
           model: state.moderator.modelId,
           modeId: state.moderator.modeId,
         },
-        members: state.members.map((member) => ({
-          provider: member.provider!,
-          model: member.modelId,
-          modeId: null,
-          persona: member.persona.trim(),
-        })),
+        members: state.members.map((member) => {
+          const displayName = member.displayName.trim();
+          return {
+            provider: member.provider!,
+            model: member.modelId,
+            modeId: null,
+            persona: member.persona.trim(),
+            ...(displayName ? { displayName } : {}),
+            ...(member.roleId ? { roleId: member.roleId } : {}),
+          };
+        }),
         artifactPath: state.artifactPath.trim(),
         limits,
       };

@@ -175,6 +175,26 @@ describe("room form model", () => {
     expect(input?.artifactPath).toBe(".paseo/rooms/architecture-review/summary.md");
   });
 
+  it("carries the role preset into displayName and roleId", () => {
+    const model = fillValidForm();
+    const [first, second] = model.getState().members;
+    model.setMemberRolePreset(first.rowId, "dba");
+    expect(model.getState().members[0].roleId).toBe("dba");
+    expect(model.getState().members[0].displayName).toBe("DBA");
+
+    // Preset fills the name; the user may still edit it.
+    model.setMemberDisplayName(first.rowId, "老王（DBA）");
+    model.setMemberRolePreset(second.rowId, "qa");
+    model.setMemberRolePreset(second.rowId, null);
+    expect(model.getState().members[1].roleId).toBeNull();
+    expect(model.getState().members[1].displayName).toBe("测试");
+
+    const input = model.toCreateInput();
+    expect(input?.members[0]).toMatchObject({ displayName: "老王（DBA）", roleId: "dba" });
+    expect(input?.members[1]).toMatchObject({ displayName: "测试" });
+    expect(input?.members[1]).not.toHaveProperty("roleId");
+  });
+
   it("returns null from toCreateInput while invalid", () => {
     const model = openRoomForm();
     expect(model.toCreateInput()).toBeNull();

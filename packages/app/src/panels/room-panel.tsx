@@ -9,7 +9,7 @@ import { roomStatusTranslationKey } from "@/components/rooms/room-header";
 import { useRoomSnapshot } from "@/rooms/rooms-store";
 
 function RoomPanel() {
-  const { serverId, target, openTab } = usePaneContext();
+  const { serverId, target, openTab, openPreferredTarget } = usePaneContext();
   invariant(target.kind === "room", "RoomPanel requires a room target");
   const handleOpenAgent = useCallback(
     (agentId: string) => {
@@ -17,9 +17,20 @@ function RoomPanel() {
     },
     [openTab],
   );
+  const handleOpenFile = useCallback(
+    (path: string) => {
+      openPreferredTarget({ kind: "file", path }, "explorerFiles");
+    },
+    [openPreferredTarget],
+  );
 
   return (
-    <RoomPanelContent serverId={serverId} roomId={target.roomId} onOpenAgent={handleOpenAgent} />
+    <RoomPanelContent
+      serverId={serverId}
+      roomId={target.roomId}
+      onOpenAgent={handleOpenAgent}
+      onOpenFile={handleOpenFile}
+    />
   );
 }
 function useRoomPanelDescriptor(

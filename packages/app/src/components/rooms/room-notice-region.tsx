@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useSessionStore } from "@/stores/session-store";
 import { requireDaemonClient } from "@/rooms/rooms-query";
 import type { PendingPermission } from "@/types/shared";
-import { memberLabel } from "@/components/rooms/room-header";
+import { roomMemberDisplayName } from "@/components/rooms/room-members";
 
 /**
  * Member permission requests surfaced inside the room. Responses route through
@@ -74,7 +74,7 @@ export function RoomPermissionCard({
     <View style={styles.card} testID="room-permission-card">
       <Text style={styles.cardTitle}>
         {t("rooms.permission.title", {
-          name: ownerLabel ? memberLabel(ownerLabel.id) : "Member",
+          name: ownerLabel ? roomMemberDisplayName(ownerLabel) : "Member",
         })}
       </Text>
       <Text style={styles.request} numberOfLines={3}>
@@ -150,7 +150,7 @@ export function RoomFailureCard({ room }: { room: RoomRecord }) {
     <View testID="room-failure-card">
       {failedMembers.map((member) => (
         <Text key={member.id} style={styles.failureText}>
-          {t("rooms.failure.memberFailed", { name: memberLabel(member.id) })}
+          {t("rooms.failure.memberFailed", { name: roomMemberDisplayName(member) })}
         </Text>
       ))}
     </View>

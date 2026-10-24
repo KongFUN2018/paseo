@@ -10,7 +10,8 @@ export interface UseRoomActionsResult {
   startRoom: () => Promise<void>;
   pauseRoom: () => Promise<void>;
   resumeRoom: () => Promise<void>;
-  interject: (text: string) => Promise<void>;
+  /** Resolves with the RPC payload so the caller can reconcile optimistic rows. */
+  interject: (text: string) => Promise<RoomMutationPayload>;
   closeRoom: () => Promise<void>;
   reopenRoom: () => Promise<void>;
   pendingAction: RoomActionName | null;
@@ -38,7 +39,7 @@ export function useRoomActions(serverId: string, roomId: string): UseRoomActions
   const queryClient = useQueryClient();
 
   const settle = useCallback(
-    async (payload: RoomMutationPayload): Promise<void> => {
+    async (payload: RoomMutationPayload): Promise<RoomMutationPayload> => {
       if (payload.error) {
         throw new Error(payload.error);
       }
@@ -46,6 +47,7 @@ export function useRoomActions(serverId: string, roomId: string): UseRoomActions
         applyRoomUpdate(serverId, payload.room, false);
         void queryClient.invalidateQueries({ queryKey: roomsQueryKey(serverId) });
       }
+      return payload;
     },
     [queryClient, serverId],
   );
@@ -118,7 +120,7 @@ export function useRoomActions(serverId: string, roomId: string): UseRoomActions
       await resumeMutation.mutateAsync(undefined);
     },
     interject: async (text: string) => {
-      await interjectMutation.mutateAsync(text);
+      return interjectMutation.mutateAsync(text);
     },
     closeRoom: async () => {
       await closeMutation.mutateAsync(undefined);
