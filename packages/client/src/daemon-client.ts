@@ -676,6 +676,16 @@ type RoomReopenPayload = Extract<
   SessionOutboundMessage,
   { type: "room.reopen.response" }
 >["payload"];
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+type RoomMemberAddPayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.member.add.response" }
+>["payload"];
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+type RoomFilesListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "room.files.list.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -928,6 +938,10 @@ export interface RoomMemberInput {
   model?: string | null;
   modeId?: string | null;
   persona: string;
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  displayName?: string;
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  roleId?: string;
 }
 export interface RoomModeratorInput {
   provider: AgentProvider;
@@ -942,6 +956,12 @@ export interface CreateRoomOptions {
   members: RoomMemberInput[];
   artifactPath: string;
   limits?: RoomLimits;
+  requestId?: string;
+}
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export interface AddRoomMemberOptions {
+  roomId: string;
+  member: RoomMemberInput;
   requestId?: string;
 }
 export interface RoomIdOptions {
@@ -6365,6 +6385,26 @@ export class DaemonClient {
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId: options.requestId,
       message: { type: "room.reopen.request", roomId: options.roomId },
+    });
+  }
+
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  async roomMemberAdd(options: AddRoomMemberOptions): Promise<RoomMemberAddPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "room.member.add.request",
+        roomId: options.roomId,
+        member: options.member,
+      },
+    });
+  }
+
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  async roomFilesList(options: RoomIdOptions): Promise<RoomFilesListPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "room.files.list.request", roomId: options.roomId },
     });
   }
 
