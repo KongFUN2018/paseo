@@ -115,6 +115,122 @@ describe("room protocol", () => {
     }
   });
 
+  test("parses the room.member.add and room.files.list rpcs", () => {
+    const addRequest = {
+      type: "room.member.add.request",
+      requestId: "r10",
+      roomId: "room_1",
+      member: {
+        provider: "codex",
+        persona: "安全视角",
+        displayName: "安全",
+        roleId: "security",
+      },
+    };
+    expect(SessionInboundMessageSchema.parse(addRequest)).toEqual(addRequest);
+
+    // The new identity fields stay optional on the wire.
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "room.member.add.request",
+        requestId: "r10",
+        roomId: "room_1",
+        member: { provider: "codex", persona: "安全视角" },
+      }),
+    ).toEqual({
+      type: "room.member.add.request",
+      requestId: "r10",
+      roomId: "room_1",
+      member: { provider: "codex", persona: "安全视角" },
+    });
+
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "room.files.list.request",
+        requestId: "r11",
+        roomId: "room_1",
+      }),
+    ).toEqual({ type: "room.files.list.request", requestId: "r11", roomId: "room_1" });
+
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "room.member.add.response",
+        payload: { requestId: "r10", room: baseRecord, error: null },
+      }),
+    ).toMatchObject({ type: "room.member.add.response", payload: { requestId: "r10" } });
+
+    const filesResponse = {
+      type: "room.files.list.response",
+      payload: {
+        requestId: "r11",
+        error: null,
+        files: [
+          {
+            path: ".paseo/rooms/x/member_1/a.md",
+            memberId: "member_1",
+            sizeBytes: 12,
+            updatedAtMs: 1,
+          },
+          { path: ".paseo/rooms/x/summary.md", memberId: null, sizeBytes: 3, updatedAtMs: 2 },
+        ],
+      },
+    };
+    expect(SessionOutboundMessageSchema.parse(filesResponse)).toEqual(filesResponse);
+  });
+
+  test("parses the room_partial_update push", () => {
+    const partial = {
+      type: "room_partial_update",
+      payload: { roomId: "room_1", memberId: "member_1", text: "结论", toolCalls: 2, done: false },
+    };
+    expect(SessionOutboundMessageSchema.parse(partial)).toEqual(partial);
+
+    // The member identity fields ride along on records and push snapshots.
+    const withJoiner = {
+      ...baseRecord,
+      members: [
+        ...baseRecord.members,
+        {
+          ...baseRecord.members[0],
+          id: "member_2",
+          displayName: "安全",
+          roleId: "security",
+          catchUpPending: true,
+        },
+      ],
+    };
+    const parsed = SessionOutboundMessageSchema.parse({
+      type: "room_update",
+      payload: { room: withJoiner },
+    });
+    expect(parsed.type).toBe("room_update");
+    if (parsed.type === "room_update") {
+      expect(parsed.payload.room.members.at(-1)).toMatchObject({
+        id: "member_2",
+        displayName: "安全",
+        roleId: "security",
+        catchUpPending: true,
+      });
+    }
+  });
+
+  test("room.create members accept optional displayName and roleId", () => {
+    const request = {
+      type: "room.create.request",
+      requestId: "r12",
+      workspaceId: "ws_1",
+      name: "评审",
+      topic: "选题",
+      moderator: { provider: "claude" },
+      members: [
+        { provider: "codex", persona: "运维视角", displayName: "运维", roleId: "ops" },
+        { provider: "claude", persona: "可靠性视角" },
+      ],
+      artifactPath: ".paseo/rooms/x/summary.md",
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  });
+
   test("keeps new fields optional so older peers still parse", () => {
     const legacyRecord = { ...baseRecord };
     delete (legacyRecord as Record<string, unknown>).pendingCheckpoint;

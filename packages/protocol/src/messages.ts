@@ -83,6 +83,14 @@ import {
   RoomCloseResponseSchema,
   RoomReopenResponseSchema,
   RoomUpdateMessageSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomMemberAddRequestSchema,
+  RoomMemberAddResponseSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomFilesListRequestSchema,
+  RoomFilesListResponseSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomPartialUpdateMessageSchema,
 } from "./room/rpc-schemas.js";
 import {
   LoopRunRequestSchema,
@@ -3434,6 +3442,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RoomInterjectRequestSchema,
   RoomCloseRequestSchema,
   RoomReopenRequestSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomMemberAddRequestSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomFilesListRequestSchema,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -7131,6 +7143,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RoomCloseResponseSchema,
   RoomReopenResponseSchema,
   RoomUpdateMessageSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomMemberAddResponseSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomFilesListResponseSchema,
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  RoomPartialUpdateMessageSchema,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

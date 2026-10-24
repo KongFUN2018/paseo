@@ -7,6 +7,10 @@ const RoomMemberInputSchema = z.object({
   model: z.string().trim().min(1).nullable().optional(),
   modeId: z.string().trim().min(1).nullable().optional(),
   persona: z.string(),
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  displayName: z.string().trim().min(1).optional(),
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  roleId: z.string().trim().min(1).optional(),
 });
 
 const RoomModeratorInputSchema = z.object({
@@ -153,5 +157,58 @@ export const RoomUpdateMessageSchema = z.object({
     room: RoomRecordSchema,
     // True when the transcript was truncated for the wire (design §8.3).
     truncated: z.boolean().optional(),
+  }),
+});
+
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export const RoomMemberAddRequestSchema = z.object({
+  type: z.literal("room.member.add.request"),
+  requestId: z.string(),
+  roomId: z.string().min(1),
+  member: RoomMemberInputSchema,
+});
+
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export const RoomMemberAddResponseSchema = z.object({
+  type: z.literal("room.member.add.response"),
+  payload: RoomMutationPayloadSchema,
+});
+
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export const RoomFilesListRequestSchema = z.object({
+  type: z.literal("room.files.list.request"),
+  requestId: z.string(),
+  roomId: z.string().min(1),
+});
+
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export const RoomFilesListResponseSchema = z.object({
+  type: z.literal("room.files.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    error: z.string().nullable(),
+    files: z.array(
+      z.object({
+        // Workspace-relative path; memberId null means the moderator summary or a root file.
+        path: z.string(),
+        memberId: z.string().nullable(),
+        sizeBytes: z.number(),
+        updatedAtMs: z.number(),
+      }),
+    ),
+  }),
+});
+
+// COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+export const RoomPartialUpdateMessageSchema = z.object({
+  type: z.literal("room_partial_update"),
+  payload: z.object({
+    roomId: z.string().min(1),
+    memberId: z.string().min(1),
+    // Accumulated snapshot of the in-progress statement, NOT a delta.
+    text: z.string(),
+    toolCalls: z.number().int().nonnegative(),
+    // True exactly once at the terminal flush (completed/failed/canceled).
+    done: z.boolean(),
   }),
 });

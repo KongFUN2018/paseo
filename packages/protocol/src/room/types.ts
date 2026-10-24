@@ -52,6 +52,13 @@ export const RoomMemberSchema = z.object({
   turnCount: z.number().int().nonnegative(),
   // Last usage snapshot read live from AgentManager; not persisted on disk.
   lastUsage: RoomMemberUsageSchema.optional(),
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  displayName: z.string().optional(),
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  roleId: z.string().optional(),
+  // COMPAT(roomRefactor): added in v0.14.0, remove after 2027-04-24 once daemon floor >= v0.14.0.
+  // True while the member has not completed its catch-up first turn after joining mid-room.
+  catchUpPending: z.boolean().optional(),
 });
 export type RoomMember = z.infer<typeof RoomMemberSchema>;
 
