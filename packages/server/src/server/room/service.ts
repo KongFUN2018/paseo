@@ -117,6 +117,8 @@ export interface RoomServiceOptions {
 export class RoomService {
   private readonly store: RoomStore;
   private readonly chains = new Map<string, Promise<unknown>>();
+  /** In-flight moderator run per room; checkpoints run one at a time (§4 fix). */
+  private readonly moderatorRuns = new Map<string, Promise<void>>();
   private readonly turnTimers = new Map<string, NodeJS.Timeout>();
   private readonly latest = new Map<string, RoomRecord>();
   /** Last room files fingerprint per room for the turn-prompt diff (design §8.2). */
@@ -464,10 +466,12 @@ export class RoomService {
           return;
         }
         case "ask_moderator":
-          // Long-running: runs outside the queue and feeds its result back as an event.
-          void this.runModerator(roomId, command.checkpoint).catch((error) => {
-            this.options.logger.error({ err: error, roomId }, "Moderator task failed");
-          });
+          // Long-running: runs outside the queue and feeds its result back as an
+          // event. Serialized per room: a second checkpoint racing an in-flight
+          // run would fail AgentManager's active-run guard and feed a fallback
+          // decision while the first run's late reply also lands, breaking the
+          // one-turn-at-a-time invariant (2026-10-25 acceptance §4).
+          this.queueModeratorRun(roomId, command.checkpoint);
           return;
         case "prompt_member":
           void this.runMemberTurn(roomId, command.memberId).catch((error) => {
@@ -608,6 +612,33 @@ export class RoomService {
   // ===========================================================================
   // Moderator + member turns
   // ===========================================================================
+
+  /**
+   * Run moderator checkpoints one at a time per room. ask_moderator commands
+   * are fire-and-forget, so without this chain an interjection checkpoint
+   * (queued while no speaker is active) could start while the previous
+   * round_end run is still streaming: the new run fails AgentManager's
+   * active-run guard and applies the deterministic fallback, and the first
+   * run's late reply then also lands — two moderator_checkpoint_ready events
+   * for one checkpoint, each free to start a member turn (2026-10-25
+   * acceptance §4). Serializing lets the second checkpoint read fresh state
+   * and get a real moderator decision instead of the fallback.
+   */
+  private queueModeratorRun(
+    roomId: string,
+    checkpoint: "opening" | "round_end" | "interjection" | "summary",
+  ): void {
+    const previous = this.moderatorRuns.get(roomId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => this.runModerator(roomId, checkpoint));
+    const tail = run.catch(() => undefined);
+    this.moderatorRuns.set(roomId, tail);
+    void tail.finally(() => {
+      if (this.moderatorRuns.get(roomId) === tail) this.moderatorRuns.delete(roomId);
+    });
+    run.catch((error) => {
+      this.options.logger.error({ err: error, roomId }, "Moderator task failed");
+    });
+  }
 
   private async runModerator(
     roomId: string,

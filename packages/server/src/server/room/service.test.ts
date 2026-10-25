@@ -106,6 +106,12 @@ function hasSystemEntry(room: { transcript: Array<{ kind: string; text: string }
   );
 }
 
+function hasMemberOneStatement(room: {
+  transcript: Array<{ kind: string; memberId?: string | null }>;
+}): boolean {
+  return room.transcript.some((entry) => entry.kind === "member" && entry.memberId === "member_1");
+}
+
 const CAPABILITIES = {
   supportsStreaming: false,
   supportsSessionPersistence: true,
@@ -126,9 +132,25 @@ function memberIdFromPrompt(config: AgentSessionConfig): string | null {
   );
 }
 
-function isMemberTurnPrompt(prompt: string): boolean {
-  // v2 turn marker (design §5.4) or the legacy v1 marker.
-  return prompt.includes("[第 1 轮｜第 0 个 turn]") || prompt.includes("[round 1 | turn 0]");
+/** Round index from a member turn prompt marker (v2 then v1). */
+function memberTurnRound(prompt: string): number | null {
+  return (
+    Number(/\[第 (\d+) 轮｜/.exec(prompt)?.[1]) ||
+    Number(/\[round (\d+) \|/.exec(prompt)?.[1]) ||
+    null
+  );
+}
+
+function isCheckpointPrompt(prompt: string): boolean {
+  return prompt.includes("Decide the next step");
+}
+
+/** When to hold a member turn open inside ScriptedRoomSession. */
+interface HoldTurnsSpec {
+  /** First round whose member turns hold on the gate (default 1 = all). */
+  fromRound: number;
+  /** Restrict the hold to these member ids; undefined holds every member. */
+  memberIds?: string[];
 }
 
 /** Scripted session: moderator answers JSON, members answer a fixed statement. */
@@ -142,6 +164,8 @@ class ScriptedRoomSession implements AgentSession {
   turnStarted = false;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   readonly memberId: string | null;
+  /** Turn interrupted by the harness; its late tail events are suppressed. */
+  private cancelledTurnId: string | null = null;
 
   constructor(
     private readonly config: AgentSessionConfig,
@@ -150,6 +174,8 @@ class ScriptedRoomSession implements AgentSession {
     private readonly failMemberTurns: boolean,
     provider: string,
     capabilities: AgentCapabilityFlags,
+    private readonly holdCheckpoint: Deferred<void> | null = null,
+    private readonly holdTurns: HoldTurnsSpec = { fromRound: 1 },
   ) {
     this.provider = provider as AgentSession["provider"];
     // The manager stamps the agent record from session capabilities, so the
@@ -170,8 +196,22 @@ class ScriptedRoomSession implements AgentSession {
     void (async () => {
       // Defer like real providers: events must arrive after the manager's waiter is set up.
       await new Promise((resolveTick) => setTimeout(resolveTick, 0));
-      if (this.holdTurn && isMemberTurnPrompt(text)) {
+      if (this.holdCheckpoint && isCheckpointPrompt(text)) {
+        await this.holdCheckpoint.promise;
+      }
+      const round = memberTurnRound(text);
+      if (
+        this.holdTurn &&
+        round !== null &&
+        round >= this.holdTurns.fromRound &&
+        (!this.holdTurns.memberIds ||
+          (this.memberId !== null && this.holdTurns.memberIds.includes(this.memberId)))
+      ) {
         await this.holdTurn.promise;
+      }
+      if (this.cancelledTurnId === turnId) {
+        // Interrupted while held: a real provider emits nothing further.
+        return;
       }
       this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
       if (this.streaming && this.memberId) {
@@ -287,10 +327,13 @@ class ScriptedRoomSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     this.interruptCount += 1;
+    const turnId = `turn-${this.id}-${this.turnCounter}`;
+    this.cancelledTurnId = turnId;
     this.pushEvent({
-      type: "turn_cancelled",
+      type: "turn_canceled",
       provider: this.provider,
-      turnId: `turn-${this.id}-${this.turnCounter}`,
+      reason: "Interrupted",
+      turnId,
     });
   }
 
@@ -311,16 +354,22 @@ class ScriptedRoomClient implements AgentClient {
       capabilities?: Partial<typeof CAPABILITIES>;
       streaming?: boolean;
       failMemberTurns?: boolean;
+      holdCheckpoint?: Deferred<void> | null;
+      holdTurns?: HoldTurnsSpec;
     },
   ) {
     this.provider = options?.provider ?? "codex";
     this.capabilities = { ...CAPABILITIES, ...options?.capabilities };
     this.streaming = options?.streaming ?? false;
     this.failMemberTurns = options?.failMemberTurns ?? false;
+    this.holdCheckpoint = options?.holdCheckpoint ?? null;
+    this.holdTurns = options?.holdTurns ?? { fromRound: 1 };
   }
 
   private readonly streaming: boolean;
   private readonly failMemberTurns: boolean;
+  private readonly holdCheckpoint: Deferred<void> | null;
+  private readonly holdTurns: HoldTurnsSpec;
 
   async isAvailable(): Promise<boolean> {
     return true;
@@ -335,6 +384,8 @@ class ScriptedRoomClient implements AgentClient {
       this.failMemberTurns,
       this.provider,
       this.capabilities,
+      this.holdCheckpoint,
+      this.holdTurns,
     );
     this.sessions.push(session);
     return session;
@@ -371,6 +422,8 @@ describe("RoomService with a scripted provider", () => {
       streaming?: boolean;
       withNonPersistentProvider?: boolean;
       failMemberTurns?: boolean;
+      holdCheckpoint?: Deferred<void> | null;
+      holdTurns?: HoldTurnsSpec;
     },
   ) {
     workDir = await mkdtemp(join(tmpdir(), "room-service-ws-"));
@@ -382,6 +435,8 @@ describe("RoomService with a scripted provider", () => {
     const client = new ScriptedRoomClient(logger, holdTurn, {
       streaming: options?.streaming,
       failMemberTurns: options?.failMemberTurns,
+      holdCheckpoint: options?.holdCheckpoint,
+      holdTurns: options?.holdTurns,
     });
     const clients: Record<string, AgentClient> = { codex: client };
     if (options?.withNonPersistentProvider) {
@@ -923,6 +978,97 @@ describe("RoomService with a scripted provider", () => {
       after?.transcript.some((entry) => entry.kind === "member" && entry.memberId === "member_1"),
     ).toBe(false);
     // Let the room reach its resting state so cleanup does not race in-flight writes.
+    await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+  });
+
+  test("an interjection during an in-flight checkpoint keeps one member turn at a time", async () => {
+    // 2026-10-25 acceptance §4: the user interjects inside the checkpoint
+    // window (turn idle, round_end moderator run still streaming). The racing
+    // second checkpoint must not produce a duplicate moderator reply that
+    // starts a second member turn — the next prompt for the still-streaming
+    // member would fail on AgentManager's active-run guard and kill the seat.
+    const holdCheckpoint = deferred<void>();
+    const holdMember1 = deferred<void>();
+    const { service, client } = await buildService(holdMember1, {
+      holdCheckpoint,
+      // Round 1 runs free; from round 2 only member_1's turn holds open, so a
+      // duplicate prompt for member_2 would complete and re-prompt member_1
+      // while its run is still active.
+      holdTurns: { fromRound: 2, memberIds: ["member_1"] },
+    });
+    const base = createInput();
+    const room = await service.create({ ...base, members: base.members.slice(0, 2) });
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+
+    // Round 1 finishes; the round_end checkpoint run then blocks on the gate.
+    await waitForRoom(service, room.id, hasTwoMemberEntries);
+    // The interjection lands in the idle window while the checkpoint runs.
+    await service.interject(room.id, "先等等");
+    // Let any racing fallback cascade fire; with the fix the only thing that
+    // can start round 2 is the real checkpoint reply after the gate opens.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 120));
+    holdCheckpoint.resolve();
+
+    // Round 2's first turn (member_1, held) opens only after the checkpoint
+    // window closes; releasing it lets the room rotate and finish.
+    holdMember1.resolve();
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+
+    // No seat was failed and both members kept their rotation.
+    expect(
+      closing.transcript.some((entry) => entry.kind === "system" && entry.text.includes("failed")),
+    ).toBe(false);
+    expect(closing.members[0]).toMatchObject({ id: "member_1", turnCount: 2 });
+    expect(closing.members[1]).toMatchObject({ id: "member_2", turnCount: 2 });
+    // The interjection reached a moderator checkpoint prompt (the serialized
+    // second checkpoint ran after the first, instead of losing the race and
+    // falling back).
+    const moderatorPrompts = client.sessions
+      .filter((session) => session.memberId === null)
+      .flatMap((session) => session.prompts);
+    expect(
+      moderatorPrompts.some(
+        (prompt) => prompt.includes("Decide the next step") && prompt.includes("先等等"),
+      ),
+    ).toBe(true);
+  });
+
+  test("a cancelled member turn releases its run and the seat speaks again after resume", async () => {
+    const gate = deferred<void>();
+    const { service } = await buildService(gate);
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+    // Let member_1's turn reach its held startTurn.
+    await new Promise((resolveTick) => setTimeout(resolveTick, 50));
+
+    await service.pause(room.id);
+    // The cancelled turn's held continuation must not resurrect it.
+    gate.resolve();
+    await new Promise((resolveTick) => setTimeout(resolveTick, 50));
+    const { room: paused } = await service.get(room.id);
+    expect(paused?.status).toBe("interrupted");
+    expect(paused?.transcript.filter((entry) => entry.kind === "member")).toHaveLength(0);
+
+    const resumed = await service.resume(room.id);
+    expect(resumed.status).toBe("discussing");
+    // The interrupted member is re-prompted on a fresh run and completes: the
+    // cancelled run was fully released, so the active-run guard stays silent.
+    const withStatement = await waitForRoom(service, room.id, hasMemberOneStatement);
+    expect(
+      withStatement.transcript.some(
+        (entry) => entry.kind === "system" && entry.text.includes("failed"),
+      ),
+    ).toBe(false);
     await waitForRoom(
       service,
       room.id,

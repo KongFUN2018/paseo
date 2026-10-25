@@ -113,10 +113,15 @@ describe("RoomScheduler rotation", () => {
   });
 
   test("reorders to a valid member and ignores an unknown member id", () => {
-    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
-    const opened = stepRoomScheduler(start, opening).record;
+    // A checkpoint reply acts on the pending interjection checkpoint while no
+    // speaker is active (replies that land mid-turn are stale and dropped).
+    const pending = makeRecord({
+      status: "discussing",
+      pendingCheckpoint: "interjection",
+      round: { index: 1, remainingMemberIds: ["member_2", "member_3"] },
+    });
 
-    const unknown = stepRoomScheduler(opened, {
+    const unknown = stepRoomScheduler(pending, {
       type: "moderator_checkpoint_ready",
       at: AT,
       action: "reorder",
@@ -128,10 +133,13 @@ describe("RoomScheduler rotation", () => {
   });
 
   test("skips a member the moderator names at a checkpoint", () => {
-    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
-    const opened = stepRoomScheduler(start, opening).record;
+    const pending = makeRecord({
+      status: "discussing",
+      pendingCheckpoint: "interjection",
+      round: { index: 1, remainingMemberIds: ["member_2", "member_3"] },
+    });
 
-    const skipped = stepRoomScheduler(opened, {
+    const skipped = stepRoomScheduler(pending, {
       type: "moderator_checkpoint_ready",
       at: AT,
       action: "skip",
@@ -382,7 +390,8 @@ describe("RoomScheduler budget", () => {
       { type: "moderator_checkpoint_ready", at: AT, action: "finish" },
     ]);
 
-    // Downgraded to continue: a new turn starts instead of closing the room.
+    // No checkpoint was pending, so the reply is stale and dropped: the room
+    // stays discussing instead of closing.
     expect(final.status).toBe("discussing");
   });
 
@@ -398,6 +407,73 @@ describe("RoomScheduler budget", () => {
 
     expect(results[0]?.commands).toEqual([{ type: "ask_moderator", checkpoint: "summary" }]);
     expect(final.status).toBe("closing");
+  });
+});
+
+describe("RoomScheduler stale checkpoint replies", () => {
+  // Regression (2026-10-25 acceptance §4): an interjection checkpoint fired
+  // while a round_end run was still in flight makes the racing fallback feed a
+  // second moderator_checkpoint_ready. The duplicate must never start another
+  // member turn while one is already streaming, or the next prompt for the
+  // still-running member fails on AgentManager's active-run guard and the
+  // seat is lost permanently.
+
+  function roundTwoWithSpeaker(): RoomRecord {
+    // Round 2 started: member_1 is speaking, member_2 waits in the round.
+    return makeRecord({
+      status: "discussing",
+      round: { index: 2, remainingMemberIds: ["member_2"] },
+      turn: {
+        index: 3,
+        memberId: "member_1",
+        agentId: "agent-member_1",
+        turnId: null,
+        status: "speaking",
+        startedAt: AT,
+        deadlineAt: AT,
+        attempt: 0,
+      },
+    });
+  }
+
+  test("drops a duplicate reply once its checkpoint was consumed", () => {
+    const { record, results } = run(roundTwoWithSpeaker(), [
+      { type: "moderator_checkpoint_ready", at: AT, action: "continue", nextMemberId: "member_2" },
+    ]);
+
+    expect(results[0]?.commands).toEqual([]);
+    expect(record.turn).toMatchObject({ memberId: "member_1", status: "speaking" });
+    expect(record.round.remainingMemberIds).toEqual(["member_2"]);
+  });
+
+  test("drops a reply that lands while a speaker is active even if a checkpoint is pending", () => {
+    const { record, results } = run(
+      makeRecord({
+        ...roundTwoWithSpeaker(),
+        pendingCheckpoint: "interjection",
+      }),
+      [{ type: "moderator_checkpoint_ready", at: AT, action: "continue" }],
+    );
+
+    expect(results[0]?.commands).toEqual([]);
+    expect(record.turn.status).toBe("speaking");
+    // The stale pending checkpoint stays for the reply that actually owns it.
+    expect(record.pendingCheckpoint).toBe("interjection");
+  });
+
+  test("a reply while idle with a pending checkpoint still acts", () => {
+    const { results } = run(
+      makeRecord({
+        status: "discussing",
+        pendingCheckpoint: "interjection",
+        round: { index: 1, remainingMemberIds: ["member_1", "member_2", "member_3"] },
+      }),
+      [{ type: "moderator_checkpoint_ready", at: AT, action: "continue" }],
+    );
+
+    expect(results[0]?.commands).toEqual([
+      { type: "prompt_member", memberId: "member_1", attempt: 0 },
+    ]);
   });
 });
 
@@ -436,6 +512,50 @@ describe("RoomScheduler mid-room joins", () => {
     expect(result.commands).toEqual([]);
     expect(result.record.transcript).toHaveLength(0);
     expect(result.record.round.remainingMemberIds).toEqual([]);
+  });
+
+  test("member_added marker omits the persona segment for an empty persona", () => {
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const result = stepRoomScheduler(
+      recordWithJoiner({ ...opened, members: [...opened.members, { ...joiner, persona: "" }] }),
+      { type: "member_added", at: AT, memberId: "member_4" },
+    );
+
+    const marker = result.record.transcript.at(-1)?.text ?? "";
+    expect(marker).toContain("成员 member_4（claude/default）加入房间");
+    expect(marker).not.toContain("，）");
+  });
+
+  test("member_added marker keeps the persona digest for a non-empty persona", () => {
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const result = stepRoomScheduler(
+      recordWithJoiner({
+        ...opened,
+        members: [...opened.members, { ...joiner, persona: "负责回归测试" }],
+      }),
+      { type: "member_added", at: AT, memberId: "member_4" },
+    );
+
+    const marker = result.record.transcript.at(-1)?.text ?? "";
+    expect(marker).toBe("成员 member_4（claude/default，负责回归测试）加入房间，将在本轮队尾发言");
+  });
+
+  test("member_added marker truncates a persona past 60 characters", () => {
+    const longPersona = "长".repeat(80);
+    const start = stepRoomScheduler(makeRecord(), { type: "room_started", at: AT }).record;
+    const opened = stepRoomScheduler(start, opening).record;
+    const result = stepRoomScheduler(
+      recordWithJoiner({
+        ...opened,
+        members: [...opened.members, { ...joiner, persona: longPersona }],
+      }),
+      { type: "member_added", at: AT, memberId: "member_4" },
+    );
+
+    const marker = result.record.transcript.at(-1)?.text ?? "";
+    expect(marker).toContain(`，${"长".repeat(60)}…）加入房间`);
   });
 
   test("member_added queues the joiner in an interrupted room", () => {

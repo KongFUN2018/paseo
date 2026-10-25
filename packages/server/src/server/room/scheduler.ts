@@ -312,6 +312,10 @@ function handleTurnCompleted(
   return startNextTurn(record, event.at, null);
 }
 
+function personaDigestFor(persona: string): string {
+  return persona.length > 60 ? `${persona.slice(0, 60)}…` : persona;
+}
+
 function handleMemberAdded(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "member_added" }>,
@@ -322,14 +326,16 @@ function handleMemberAdded(
   const member = findMember(record, event.memberId);
   if (!member) return [];
   const displayName = member.displayName ?? member.id;
-  const personaDigest =
-    member.persona.length > 60 ? `${member.persona.slice(0, 60)}…` : member.persona;
+  // Empty personas omit the digest segment entirely, so the marker never
+  // carries a dangling "，）" (2026-10-24 acceptance §3 P5).
+  const personaDigest = personaDigestFor(member.persona);
+  const personaSegment = personaDigest.length > 0 ? `，${personaDigest}` : "";
   appendEntry(record, {
     at: event.at,
     kind: "system",
     memberId: member.id,
     agentId: member.agentId,
-    text: `成员 ${displayName}（${member.provider}/${member.model ?? "default"}，${personaDigest}）加入房间，将在本轮队尾发言`,
+    text: `成员 ${displayName}（${member.provider}/${member.model ?? "default"}${personaSegment}）加入房间，将在本轮队尾发言`,
     turnId: null,
   });
   record.round.remainingMemberIds.push(member.id);
@@ -417,8 +423,19 @@ function handleCheckpoint(
 ): RoomCommand[] {
   // Checkpoints only apply while the room is actively discussing.
   if (record.status !== "discussing") return [];
+  const checkpoint = record.pendingCheckpoint ?? null;
+  if (checkpoint === null || record.turn.status !== "idle") {
+    // Stale duplicate reply: every ask_moderator sets pendingCheckpoint while
+    // no speaker is active, so a reply that matches no outstanding checkpoint,
+    // or one landing while a member is already speaking, comes from a second
+    // runModerator that raced the first (an interjection checkpoint fired
+    // while a round_end run was still in flight; 2026-10-25 acceptance §4).
+    // Acting on it would start a second concurrent member turn, and the next
+    // prompt for the still-streaming member would fail on AgentManager's
+    // active-run guard. Drop it and leave the pending checkpoint untouched.
+    return [];
+  }
   const commands: RoomCommand[] = [];
-  const checkpoint = record.pendingCheckpoint;
   record.pendingCheckpoint = null;
 
   if (event.action === "answer_user" && event.userReply) {

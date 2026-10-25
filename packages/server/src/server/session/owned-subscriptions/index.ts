@@ -58,6 +58,17 @@ export interface OwnedSubscription {
 const requests = new AsyncLocalStorage<RequestOwner>();
 const projectionSource = new AsyncLocalStorage<ProjectionOwner>();
 
+// Design note (roomRefactor): permanent delivery semantics, not a
+// removal-tracked shim. Room pushes are global broadcasts by design (design
+// §6.4: "多客户端 | 全连接广播") — they are fanned out to every
+// session through wsServer.broadcast → session.publish → emit → onMessage, so
+// they never route through the owned-subscription machinery and never carry a
+// proof. The modern-socket gate below must admit them, or every GUI client
+// (which advertises owned_subscriptions) silently loses all room pushes while
+// raw/legacy clients keep receiving them. Permission enforcement stays at the
+// emit layer (workspace.read in operation-permissions).
+const GLOBAL_BROADCAST_TYPES: ReadonlySet<string> = new Set(["room_update", "room_partial_update"]);
+
 /** Source provenance and lifetimes. Domain producers own snapshots, filters and buffering. */
 export class SessionDelivery {
   private readonly sources = new Map<object, Source>();
@@ -408,7 +419,10 @@ export class SessionDelivery {
       return true;
     }
     const owner = this.proofs.get(message);
-    return owner?.active === true && owner.source === source;
+    if (owner?.active === true && owner.source === source) return true;
+    // Global room broadcasts (see GLOBAL_BROADCAST_TYPES) reach modern sources
+    // without a proof; everything else stays subscription-gated.
+    return GLOBAL_BROADCAST_TYPES.has(message.type);
   }
 
   private sendOwned(owner: DeliveryOwner, message: SessionOutboundMessage): void {

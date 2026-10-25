@@ -16,6 +16,7 @@ import {
   encodeFileTransferFrame,
   FileTransferOpcode,
 } from "@getpaseo/protocol/binary-frames/index";
+import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import {
   encodeTerminalSnapshotPayload,
   encodeTerminalStreamFrame,
@@ -7843,4 +7844,65 @@ test("measures an outbound message in UTF-8 bytes against the daemon's message l
   );
   expect(mock.sent).toHaveLength(1);
   expect(client.getConnectionState().status).toBe("connected");
+});
+
+// COMPAT(roomRefactor) chain regression: a room_partial_update push arriving on
+// the wire must clear inbound validation (generated AOT validators included)
+// and reach typed listeners. This guards the silent-drop class where a stale
+// generated validator union drops a newly added message type before any
+// listener ever sees it (2026-10-24 acceptance P1).
+test("delivers room_partial_update pushes to typed listeners", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "room_partial_chain_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ preserveSent: true });
+  await connectPromise;
+
+  const partials: Array<Extract<SessionOutboundMessage, { type: "room_partial_update" }>> = [];
+  client.on("room_partial_update", (message) => {
+    if (message.type !== "room_partial_update") return;
+    partials.push(message);
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "room_partial_update",
+      payload: {
+        roomId: "room_1",
+        memberId: "member_1",
+        text: "逐字上屏",
+        toolCalls: 2,
+        done: false,
+      },
+    }),
+  );
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "room_partial_update",
+      payload: {
+        roomId: "room_1",
+        memberId: "member_1",
+        text: "逐字上屏。",
+        toolCalls: 2,
+        done: true,
+      },
+    }),
+  );
+
+  expect(partials).toHaveLength(2);
+  expect(partials[0].payload).toEqual({
+    roomId: "room_1",
+    memberId: "member_1",
+    text: "逐字上屏",
+    toolCalls: 2,
+    done: false,
+  });
+  expect(partials[1].payload.done).toBe(true);
 });

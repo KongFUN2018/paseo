@@ -169,3 +169,52 @@ test("failed teardown still closes the delivery and rejects late work", async ()
     delivery.request(source, { type: "ping", requestId: "late" }, async () => {}),
   ).rejects.toThrow("Session delivery is closed");
 });
+
+// COMPAT(roomRefactor) regression: room pushes are global broadcasts (design
+// §6.3) — they reach the socket gate without a subscription proof, so the
+// modern-socket gate must admit them for every active source. Every GUI client
+// advertises owned_subscriptions; without this admission the daemon delivered
+// room_update/room_partial_update to raw legacy sockets only, which is exactly
+// the 2026-10-24 acceptance failure (probe saw 200 partials, app saw zero).
+test("the modern socket gate admits global room broadcasts without a proof", () => {
+  const delivery = new SessionDelivery(() => {});
+  const modern = {};
+  const legacy = {};
+  delivery.attach(modern, true);
+  delivery.attach(legacy, false);
+
+  const roomUpdate = {
+    type: "room_update",
+    payload: { room: { id: "room_1" } },
+  } as unknown as Parameters<typeof delivery.permits>[1];
+  const roomPartialUpdate = {
+    type: "room_partial_update",
+    payload: { roomId: "room_1", memberId: "member_1", text: "hi", toolCalls: 0, done: false },
+  } as unknown as Parameters<typeof delivery.permits>[1];
+
+  expect(delivery.permits(modern, roomUpdate)).toBe(true);
+  expect(delivery.permits(modern, roomPartialUpdate)).toBe(true);
+  expect(delivery.permits(legacy, roomUpdate)).toBe(true);
+  expect(delivery.permits(legacy, roomPartialUpdate)).toBe(true);
+
+  // Everything else stays subscription-gated for modern sockets.
+  const agentUpdate = {
+    type: "agent_update",
+    payload: { kind: "upsert", agent: { id: "a1" } },
+  } as unknown as Parameters<typeof delivery.permits>[1];
+  expect(delivery.permits(modern, agentUpdate)).toBe(false);
+  expect(delivery.permits(legacy, agentUpdate)).toBe(true);
+});
+
+test("an inactive source is never admitted, even for global room broadcasts", async () => {
+  const delivery = new SessionDelivery(() => {});
+  const source = {};
+  delivery.attach(source, true);
+  const roomUpdate = {
+    type: "room_update",
+    payload: { room: { id: "room_1" } },
+  } as unknown as Parameters<typeof delivery.permits>[1];
+  expect(delivery.permits(source, roomUpdate)).toBe(true);
+  await delivery.detach(source);
+  expect(delivery.permits(source, roomUpdate)).toBe(false);
+});
