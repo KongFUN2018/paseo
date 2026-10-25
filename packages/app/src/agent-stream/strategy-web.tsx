@@ -271,6 +271,29 @@ function isScrollContainerOverscrolledPastBottom(
   return getScrollContainerDistanceFromBottom(scrollContainer) < -BOTTOM_OVERSCROLL_TOLERANCE_PX;
 }
 
+interface TrackedPointerGesture {
+  kind: "scrollbar" | "autoscroll";
+  pointerId: number;
+}
+
+/**
+ * True when a pointer event belongs to the tracked gesture. A null gesture and
+ * an event without a `pointerId` (synthetic `Event("pointerup")` dispatches,
+ * automation, some embedded browsers) never match: the old
+ * `gesture?.pointerId === event.pointerId` form read `undefined === undefined`
+ * as true and crashed reading `gesture.kind` off null (#P1-2).
+ */
+export function pointerEventMatchesGesture(
+  gesture: TrackedPointerGesture | null,
+  event: { pointerId?: number },
+): boolean {
+  if (gesture === null) {
+    return false;
+  }
+  const { pointerId } = event;
+  return typeof pointerId === "number" && gesture.pointerId === pointerId;
+}
+
 // Position updates do not change a row's content. Keep renderer work separate
 // from virtual measurements while retaining the same component across lanes.
 const StreamRowContent = React.memo(function StreamRowContent({
@@ -1086,12 +1109,21 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     };
     const handlePointerEnd = (event: PointerEvent) => {
       const gesture = mouseScrollGestureRef.current;
-      if (gesture?.pointerId === event.pointerId && gesture.kind === "scrollbar") {
+      // A `pointerup` without a pointerId (synthetic/dispatched events) made
+      // `undefined === undefined` pass the old id check and dereference
+      // `gesture.kind` on a null gesture (#P1-2).
+      if (
+        gesture !== null &&
+        pointerEventMatchesGesture(gesture, event) &&
+        gesture.kind === "scrollbar"
+      ) {
         clearMouseScrollGesture();
       }
     };
     const handlePointerCancel = (event: PointerEvent) => {
-      if (mouseScrollGestureRef.current?.pointerId === event.pointerId) {
+      const gesture = mouseScrollGestureRef.current;
+      // Same id-less-event guard: never let a synthetic cancel clear a live gesture.
+      if (gesture !== null && pointerEventMatchesGesture(gesture, event)) {
         clearMouseScrollGesture();
       }
     };

@@ -403,6 +403,20 @@ function TruncatedRow() {
 
 const transcriptKeyExtractor = (item: FeedRow) => item.key;
 
+/**
+ * Offset that pins the newest content to the bottom of the viewport; null when
+ * the content or viewport height has not been measured yet. Scrolling to this
+ * exact offset (instead of `scrollToEnd`, whose offset comes from the
+ * virtualizer's estimates) is what keeps the streaming row glued while it grows
+ * (design §4.3 — follow the output with the `wasAtBottom` semantics).
+ */
+export function bottomStickOffset(contentHeight: number, viewportHeight: number): number | null {
+  if (!(contentHeight > 0) || !(viewportHeight > 0)) {
+    return null;
+  }
+  return Math.max(0, contentHeight - viewportHeight);
+}
+
 export function RoomTranscriptFeed({
   room,
   serverId,
@@ -437,6 +451,8 @@ export function RoomTranscriptFeed({
   const lastSeqRef = useRef(room.lastSeq);
   const streamLengthRef = useRef(0);
   const pendingCountRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const viewportHeightRef = useRef(0);
 
   const turnStream = room.turn.memberId ? streams[room.turn.memberId] : undefined;
   const streamLength = turnStream && !turnStream.done ? turnStream.text.length : 0;
@@ -517,6 +533,50 @@ export function RoomTranscriptFeed({
     [],
   );
 
+  const handleLayout = useCallback<NonNullable<FlatListProps<FeedRow>["onLayout"]>>((event) => {
+    viewportHeightRef.current = event.nativeEvent.layout.height;
+  }, []);
+
+  /**
+   * Jump to the exact bottom of the measured content. `scrollToEnd` derives its
+   * offset from the virtualizer's estimated frame for the last row, which
+   * undershoots when the far-below streaming row has never been measured — the
+   * feed then rests short of the bottom, `onScroll` records "not at bottom" and
+   * following silently dies (#P1-3). Non-animated on purpose: every partial
+   * retargets the stick, and animated scrolls fire intermediate `onScroll`
+   * events that would flip `wasAtBottom` off mid-flight.
+   */
+  const stickToBottom = useCallback(() => {
+    const offset = bottomStickOffset(contentHeightRef.current, viewportHeightRef.current);
+    if (offset === null) {
+      // Heights not measured yet (fresh mount / panel still hidden): the list's
+      // own end-scroll is the only available approximation.
+      listRef.current?.scrollToEnd({ animated: false });
+      return;
+    }
+    listRef.current?.scrollToOffset({ offset, animated: false });
+  }, []);
+
+  const handleContentSizeChange = useCallback<
+    NonNullable<FlatListProps<FeedRow>["onContentSizeChange"]>
+  >(
+    (_width, height) => {
+      const grew = height > contentHeightRef.current;
+      contentHeightRef.current = height;
+      if (!grew) {
+        return;
+      }
+      // The streaming row grows without a seq change: content size is the exact
+      // signal for "the tail just got taller" (§4.3). Auto-scroll only runs on
+      // the active surface; a hidden panel has no layout events anyway, and the
+      // seq/stream effect catches up on reactivation.
+      if (active && wasAtBottomRef.current) {
+        stickToBottom();
+      }
+    },
+    [active, stickToBottom],
+  );
+
   useEffect(() => {
     if (!active) {
       return;
@@ -531,9 +591,9 @@ export function RoomTranscriptFeed({
     streamLengthRef.current = streamLength;
     pendingCountRef.current = pendingInterjections.length;
     if (wasAtBottomRef.current) {
-      listRef.current?.scrollToEnd({ animated: true });
+      stickToBottom();
     }
-  }, [active, pendingInterjections.length, room.lastSeq, streamLength]);
+  }, [active, pendingInterjections.length, room.lastSeq, stickToBottom, streamLength]);
 
   return (
     <FlatList
@@ -543,6 +603,8 @@ export function RoomTranscriptFeed({
       keyExtractor={transcriptKeyExtractor}
       onScroll={handleScroll}
       scrollEventThrottle={120}
+      onLayout={handleLayout}
+      onContentSizeChange={handleContentSizeChange}
       initialNumToRender={12}
       maxToRenderPerBatch={10}
       windowSize={8}

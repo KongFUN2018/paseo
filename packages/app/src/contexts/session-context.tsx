@@ -3,7 +3,7 @@ import { Buffer } from "buffer";
 import { AppState } from "react-native";
 import { observeOpenWorkspaceAgentIds } from "@/stores/workspace-layout-store";
 import { applyRoomUpdate } from "@/rooms/rooms-store";
-import { applyRoomPartial } from "@/rooms/room-stream-store";
+import { handleRoomPartialPush } from "@/rooms/room-push";
 import { upsertRoomIntoRoomsCache } from "@/rooms/rooms-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -672,15 +672,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     });
 
     const unsubRoomPartialUpdate = client.on("room_partial_update", (message) => {
-      if (message.type !== "room_partial_update") return;
-      applyRoomPartial({
-        serverId,
-        roomId: message.payload.roomId,
-        memberId: message.payload.memberId,
-        text: message.payload.text,
-        toolCalls: message.payload.toolCalls,
-        done: message.payload.done,
-      });
+      handleRoomPartialPush(serverId, message);
     });
 
     const unsubTerminalAttention = onFeed("terminal_attention_required", (message) => {

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { StreamItem } from "@/types/stream";
 import type { StreamRenderInput, StreamSegmentRenderers, StreamViewportHandle } from "./strategy";
-import { createWebStreamStrategy } from "./strategy-web";
+import { createWebStreamStrategy, pointerEventMatchesGesture } from "./strategy-web";
 
 vi.hoisted(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -1586,5 +1586,78 @@ describe("createWebStreamStrategy", () => {
     });
     expect(container.querySelector('[data-testid="agent-chat-scroll"]')).toBe(scrollContainer);
     expect(scrollTo).toHaveBeenCalledWith({ top: 2200, behavior: "auto" });
+  });
+
+  it("survives synthetic pointerup/pointercancel events without a pointerId (#P1-2)", () => {
+    HTMLElement.prototype.scrollTo = vi.fn();
+    const strategy = createWebStreamStrategy({ isMobileBreakpoint: true });
+    const renderInput: StreamRenderInput = {
+      agentId: "agent",
+      segments: {
+        historyVirtualized: [],
+        historyMounted: [userMessage(1)],
+        liveHead: [],
+      },
+      boundary: {
+        hasVirtualizedHistory: false,
+        hasMountedHistory: true,
+        hasLiveHead: false,
+      },
+      renderers: createRenderers(vi.fn()),
+      listEmptyComponent: null,
+      viewportRef: React.createRef<StreamViewportHandle>(),
+      routeBottomAnchorRequest: null,
+      isAuthoritativeHistoryReady: true,
+      onNearBottomChange: vi.fn(),
+      onNearHistoryStart: vi.fn().mockReturnValue(true),
+      isLoadingOlderHistory: false,
+      hasOlderHistory: false,
+      olderHistoryProgressKey: null,
+      scrollEnabled: true,
+      listStyle: null,
+      baseListContentContainerStyle: null,
+      forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
+    };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => root?.render(strategy.render(renderInput)));
+
+    // Plain Events carry no pointerId: before #P1-2 the window-level
+    // handlePointerEnd read `gesture?.pointerId === event.pointerId` as
+    // `undefined === undefined` and threw reading `kind` of null.
+    const dispatchIdLessPointerEvents = () => {
+      window.dispatchEvent(new Event("pointerup"));
+      window.dispatchEvent(new Event("pointercancel"));
+    };
+    expect(() => act(dispatchIdLessPointerEvents)).not.toThrow();
+
+    // A real numeric id that matches no gesture must not disturb the viewport either.
+    const unmatchedPointerUp = new MouseEvent("pointerup", { bubbles: true });
+    Object.defineProperty(unmatchedPointerUp, "pointerId", { value: 7 });
+    const dispatchUnmatchedPointerUp = () => {
+      window.dispatchEvent(unmatchedPointerUp);
+    };
+    expect(() => act(dispatchUnmatchedPointerUp)).not.toThrow();
+  });
+});
+
+describe("pointerEventMatchesGesture", () => {
+  it("never matches a null gesture, whatever the event carries", () => {
+    expect(pointerEventMatchesGesture(null, {})).toBe(false);
+    expect(pointerEventMatchesGesture(null, { pointerId: 1 })).toBe(false);
+    // Regression (#P1-2): id-less synthetic events against a null gesture used
+    // to compare undefined === undefined inside the handler.
+    expect(pointerEventMatchesGesture(null, { pointerId: undefined })).toBe(false);
+  });
+
+  it("matches only the gesture's own numeric pointerId", () => {
+    const gesture = { kind: "scrollbar" as const, pointerId: 3 };
+    expect(pointerEventMatchesGesture(gesture, { pointerId: 3 })).toBe(true);
+    expect(pointerEventMatchesGesture(gesture, { pointerId: 4 })).toBe(false);
+    expect(pointerEventMatchesGesture(gesture, { pointerId: undefined })).toBe(false);
+    expect(pointerEventMatchesGesture(gesture, {})).toBe(false);
   });
 });
