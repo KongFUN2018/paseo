@@ -336,12 +336,147 @@ describe("RoomScheduler interjections", () => {
         at: AT,
         action: "answer_user",
         userReply: "收到",
+        interjectionIds: ["int_1"],
       },
     ]);
 
     expect(record.transcript.at(-1)).toMatchObject({ kind: "moderator", text: "收到" });
     expect(record.interjections[0]?.status).toBe("answered");
+    expect(record.interjections[0]?.decidedAt).toBe(AT);
     expect(record.turn.index).toBe(0);
+  });
+
+  test("answer_user settles exactly the interjections the prompt listed", () => {
+    // Per-entry settlement (design §4.6.1): a reply may only settle the ids
+    // its checkpoint prompt actually carried. An interjection queued while
+    // the run was in flight stays queued for the next checkpoint.
+    const { record } = run(makeRecord({ status: "discussing" }), [
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "第一句" },
+      { type: "interjection_queued", at: AT, interjectionId: "int_2", text: "第二句" },
+      {
+        type: "moderator_checkpoint_ready",
+        at: AT,
+        action: "answer_user",
+        userReply: "收到",
+        interjectionIds: ["int_1"],
+      },
+    ]);
+
+    expect(record.interjections.find((entry) => entry.id === "int_1")?.status).toBe("answered");
+    expect(record.interjections.find((entry) => entry.id === "int_2")?.status).toBe("queued");
+    expect(record.interjections.find((entry) => entry.id === "int_2")?.decidedAt).toBeNull();
+  });
+
+  test("answer_user keeps the first decidedAt when an answered id is replayed", () => {
+    const later = "2026-10-21T11:00:00.000Z";
+    const { record } = run(makeRecord({ status: "discussing" }), [
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "第一句" },
+      {
+        type: "moderator_checkpoint_ready",
+        at: AT,
+        action: "answer_user",
+        userReply: "收到",
+        interjectionIds: ["int_1"],
+      },
+      {
+        type: "moderator_checkpoint_ready",
+        at: later,
+        action: "answer_user",
+        userReply: "再回",
+        interjectionIds: ["int_1"],
+      },
+    ]);
+
+    expect(record.interjections[0]?.status).toBe("answered");
+    expect(record.interjections[0]?.decidedAt).toBe(AT);
+  });
+
+  test("a mid-speech interjection settles delivered at the checkpoint that listed it", () => {
+    // Design §4.6.1 (2026-10-25 R9 #1): delivered means "presented to a
+    // moderator checkpoint once". The interjection queued while member_1
+    // spoke stays queued through the whole round (turn completion no longer
+    // settles anything), is listed by the round_end prompt, and settles to
+    // delivered only when that checkpoint's reply is consumed.
+    const { record, results } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "等一下" },
+      complete("member_1"),
+      complete("member_2"),
+      complete("member_3"),
+      {
+        type: "moderator_checkpoint_ready",
+        at: AT,
+        action: "continue",
+        interjectionIds: ["int_1"],
+      },
+    ]);
+
+    // No state change at turn completion: the reply path is still intact.
+    expect(results[3]?.record.interjections[0]?.status).toBe("queued");
+    // round_end dispatched with the interjection still queued (it must be
+    // listed — prompt filtering is queued-only).
+    expect(results[5]?.commands).toEqual([{ type: "ask_moderator", checkpoint: "round_end" }]);
+    // The checkpoint reply settles the snapshot: seen once → delivered.
+    expect(record.interjections[0]?.status).toBe("delivered");
+    // decidedAt belongs to answered semantics and stays untouched.
+    expect(record.interjections[0]?.decidedAt).toBeNull();
+  });
+
+  test("an interjection never settles before a checkpoint reply arrives", () => {
+    // Turn boundaries are no settlement points at all (R9 #1): without a
+    // consumed checkpoint reply the interjection stays queued regardless of
+    // when it queued relative to the turns.
+    const { record } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      complete("member_1"),
+      { type: "interjection_queued", at: AT, interjectionId: "int_late", text: "晚到" },
+      complete("member_2"),
+    ]);
+
+    expect(record.interjections[0]?.status).toBe("queued");
+  });
+
+  test("a checkpoint reply settles answer_user directly, without a delivered detour", () => {
+    // answer_user settles its snapshot to answered in the same checkpoint;
+    // only snapshot ids still queued after that (none here) would go delivered.
+    const { record } = run(makeRecord(), [
+      { type: "room_started", at: AT },
+      opening,
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "等一下" },
+      complete("member_1"),
+      complete("member_2"),
+      complete("member_3"),
+      {
+        type: "moderator_checkpoint_ready",
+        at: AT,
+        action: "answer_user",
+        userReply: "收到",
+        interjectionIds: ["int_1"],
+      },
+    ]);
+
+    expect(record.interjections[0]?.status).toBe("answered");
+    expect(record.interjections[0]?.decidedAt).toBe(AT);
+  });
+
+  test("a checkpoint reply leaves out-of-snapshot interjections queued", () => {
+    // The run's snapshot predates the second interjection: it was not listed,
+    // so it stays queued for the next checkpoint (design §4.6.1).
+    const { record } = run(makeRecord({ status: "discussing" }), [
+      { type: "interjection_queued", at: AT, interjectionId: "int_1", text: "第一句" },
+      { type: "interjection_queued", at: AT, interjectionId: "int_2", text: "第二句" },
+      {
+        type: "moderator_checkpoint_ready",
+        at: AT,
+        action: "continue",
+        interjectionIds: ["int_1"],
+      },
+    ]);
+
+    expect(record.interjections.find((entry) => entry.id === "int_1")?.status).toBe("delivered");
+    expect(record.interjections.find((entry) => entry.id === "int_2")?.status).toBe("queued");
   });
 });
 
@@ -417,6 +552,11 @@ describe("RoomScheduler stale checkpoint replies", () => {
   // member turn while one is already streaming, or the next prompt for the
   // still-running member fails on AgentManager's active-run guard and the
   // seat is lost permanently.
+  // These cases are defense line ③ (design §7.7): the checkpointRunId match
+  // at the service backfill boundary (line ①) and the per-room run
+  // serialization (line ②) run first; this reducer guard stays as the
+  // last-resort assertion for replies whose id is still current but whose
+  // turn window has moved on.
 
   function roundTwoWithSpeaker(): RoomRecord {
     // Round 2 started: member_1 is speaking, member_2 waits in the round.
@@ -632,6 +772,20 @@ describe("RoomScheduler summary gating", () => {
 
     expect(record.summary).toBeNull();
     expect(record.transcript).toHaveLength(0);
+  });
+
+  test("a second summary reply never lands a second entry", () => {
+    // Double close or the closing re-ask heal can race a second summary run
+    // whose reply lands after the first one wrote; only one entry may land
+    // (design §7.2.1 residual #2).
+    const { record } = run(makeRecord({ status: "closing" }), [
+      { type: "moderator_summary_ready", at: AT, summary: "结论一" },
+      { type: "moderator_summary_ready", at: AT, summary: "结论二" },
+    ]);
+
+    expect(record.summary).toBe("结论一");
+    expect(record.transcript.filter((entry) => entry.kind === "moderator")).toHaveLength(1);
+    expect(record.transcript.at(-1)).toMatchObject({ kind: "moderator", text: "结论一" });
   });
 
   test("closing without a summary re-asks on user_close", () => {

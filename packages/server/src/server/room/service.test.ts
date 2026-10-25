@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, afterEach, test } from "vitest";
+import { describe, expect, afterEach, test, vi } from "vitest";
 import {
   SessionOutboundMessageSchema,
   type SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
+import type { RoomRecord } from "@getpaseo/protocol/room/types";
 import { ROOM_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type pino from "pino";
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -145,6 +146,19 @@ function isCheckpointPrompt(prompt: string): boolean {
   return prompt.includes("Decide the next step");
 }
 
+/** All checkpoint prompts the moderator sessions received, in arrival order. */
+function moderatorCheckpointPrompts(client: ScriptedRoomClient): string[] {
+  return client.sessions
+    .filter((session) => session.memberId === null)
+    .flatMap((session) => session.prompts)
+    .filter((prompt) => isCheckpointPrompt(prompt));
+}
+
+/** The Pending-interjections section of a checkpoint prompt (empty when absent). */
+function pendingInterjectionsSection(prompt: string): string {
+  return prompt.split("Pending user interjections:")[1] ?? "";
+}
+
 /** When to hold a member turn open inside ScriptedRoomSession. */
 interface HoldTurnsSpec {
   /** First round whose member turns hold on the gate (default 1 = all). */
@@ -176,6 +190,7 @@ class ScriptedRoomSession implements AgentSession {
     capabilities: AgentCapabilityFlags,
     private readonly holdCheckpoint: Deferred<void> | null = null,
     private readonly holdTurns: HoldTurnsSpec = { fromRound: 1 },
+    private readonly answerUserCheckpoints = false,
   ) {
     this.provider = provider as AgentSession["provider"];
     // The manager stamps the agent record from session capabilities, so the
@@ -282,6 +297,10 @@ class ScriptedRoomSession implements AgentSession {
     }
     if (prompt.includes("Decide the next step")) {
       const round = Number(/round (\d+)/.exec(prompt)?.[1] ?? 1);
+      if (round < 2 && this.answerUserCheckpoints) {
+        // Scripted interjection reply: settle the user directly (§4.6.1 tests).
+        return '{"action":"answer_user","reason":"reply","userReply":"收到","nextMemberId":null}';
+      }
       return round >= 2
         ? '{"action":"finish","reason":"done"}'
         : '{"action":"continue","nextMemberId":null}';
@@ -356,6 +375,7 @@ class ScriptedRoomClient implements AgentClient {
       failMemberTurns?: boolean;
       holdCheckpoint?: Deferred<void> | null;
       holdTurns?: HoldTurnsSpec;
+      answerUser?: boolean;
     },
   ) {
     this.provider = options?.provider ?? "codex";
@@ -364,12 +384,14 @@ class ScriptedRoomClient implements AgentClient {
     this.failMemberTurns = options?.failMemberTurns ?? false;
     this.holdCheckpoint = options?.holdCheckpoint ?? null;
     this.holdTurns = options?.holdTurns ?? { fromRound: 1 };
+    this.answerUserCheckpoints = options?.answerUser ?? false;
   }
 
   private readonly streaming: boolean;
   private readonly failMemberTurns: boolean;
   private readonly holdCheckpoint: Deferred<void> | null;
   private readonly holdTurns: HoldTurnsSpec;
+  private readonly answerUserCheckpoints: boolean;
 
   async isAvailable(): Promise<boolean> {
     return true;
@@ -386,6 +408,7 @@ class ScriptedRoomClient implements AgentClient {
       this.capabilities,
       this.holdCheckpoint,
       this.holdTurns,
+      this.answerUserCheckpoints,
     );
     this.sessions.push(session);
     return session;
@@ -424,6 +447,7 @@ describe("RoomService with a scripted provider", () => {
       failMemberTurns?: boolean;
       holdCheckpoint?: Deferred<void> | null;
       holdTurns?: HoldTurnsSpec;
+      answerUser?: boolean;
     },
   ) {
     workDir = await mkdtemp(join(tmpdir(), "room-service-ws-"));
@@ -437,6 +461,7 @@ describe("RoomService with a scripted provider", () => {
       failMemberTurns: options?.failMemberTurns,
       holdCheckpoint: options?.holdCheckpoint,
       holdTurns: options?.holdTurns,
+      answerUser: options?.answerUser,
     });
     const clients: Record<string, AgentClient> = { codex: client };
     if (options?.withNonPersistentProvider) {
@@ -551,7 +576,7 @@ describe("RoomService with a scripted provider", () => {
 
   test("an interjection during a held turn queues without interrupting the speaker", async () => {
     const gate = deferred<void>();
-    const { service } = await buildService(gate);
+    const { service, client } = await buildService(gate);
     const room = await service.create(createInput());
     await service.start(room.id);
     await waitForRoom(service, room.id, (current) => current.status === "discussing");
@@ -576,7 +601,17 @@ describe("RoomService with a scripted provider", () => {
       room.id,
       (current) => current.status === "closing" && current.summary !== null,
     );
-    expect(closing.interjections[0]?.status).toBe("queued");
+    // R9 #1 semantics: the interjection stayed queued through the held turn,
+    // was listed exactly once by the round_end checkpoint prompt's Pending
+    // section, and settled to delivered when that reply was consumed — never
+    // answered (the scripted moderator never answers the user).
+    expect(closing.interjections[0]?.status).toBe("delivered");
+    expect(closing.interjections[0]?.decidedAt).toBeNull();
+    expect(
+      moderatorCheckpointPrompts(client).filter((prompt) =>
+        pendingInterjectionsSection(prompt).includes("先等等"),
+      ),
+    ).toHaveLength(1);
   });
 
   test("restart marks running rooms interrupted; start without resume fails", async () => {
@@ -1074,5 +1109,175 @@ describe("RoomService with a scripted provider", () => {
       room.id,
       (current) => current.status === "closing" && current.summary !== null,
     );
+  });
+
+  test("start fails fast and rolls back every created agent when a member provider cannot persist", async () => {
+    // Design §7.2.1 first patch: the room.start path (ensureAgents) probes
+    // each member right after createAgent. A non-persistent provider must
+    // fail at start (not at the member's first turn) with every agent this
+    // pass created rolled back — moderator included.
+    const { service, client, agentManager } = await buildService(null, {
+      withNonPersistentProvider: true,
+    });
+    const archive = vi.spyOn(agentManager, "archiveAgent");
+    const room = await service.create({
+      ...createInput(),
+      members: [
+        { provider: "codex", persona: "可靠性" },
+        { provider: MOCK_SLOW_PROVIDER_ID, persona: "成本" },
+      ],
+    });
+
+    await expect(service.start(room.id)).rejects.toThrow(
+      /does not support session persistence \(member member_2\)/,
+    );
+
+    // The room record was never written: forming, members pending, no agents.
+    const { room: after } = await service.get(room.id);
+    expect(after?.status).toBe("forming");
+    expect(
+      after?.members.every((member) => member.agentId === null && member.status === "pending"),
+    ).toBe(true);
+    expect(after?.transcript).toHaveLength(0);
+    // The codex client saw moderator + member_1; member_2's probe landed on
+    // the non-persistent client. The rollback array covers all three —
+    // moderator and the earlier member included, probe agent included — and
+    // nothing else leaks.
+    expect(client.configs).toHaveLength(2);
+    expect(archive).toHaveBeenCalledTimes(3);
+
+    // A room with a persistent provider still starts cleanly.
+    const retry = await service.create(createInput());
+    const started = await service.start(retry.id);
+    expect(started.status).toBe("opening");
+    expect(started.members.every((member) => member.status === "ready")).toBe(true);
+    await waitForRoom(
+      service,
+      retry.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+  });
+
+  test("the create_member self-heal path rejects a non-persistent provider and rolls the probe back", async () => {
+    const { service, agentManager } = await buildService(null, {
+      withNonPersistentProvider: true,
+    });
+    const room = await service.create(createInput());
+    await service.start(room.id);
+    await waitForRoom(service, room.id, (current) => current.status === "discussing");
+    const { room: current } = await service.get(room.id);
+    expect(current).toBeTruthy();
+    // Force the self-heal branch: member_1's agent never landed and the seat
+    // would retry with the non-persistent provider (§7.2.1 entry table).
+    const healMembers = [...current!.members];
+    healMembers[0] = {
+      ...healMembers[0]!,
+      agentId: null,
+      status: "pending" as const,
+      provider: MOCK_SLOW_PROVIDER_ID,
+    };
+    const healRecord: RoomRecord = { ...current!, members: healMembers };
+    const archive = vi.spyOn(agentManager, "archiveAgent");
+    const ensureMember = (
+      service as unknown as {
+        ensureMember: (
+          this: RoomService,
+          record: RoomRecord,
+          memberId: string,
+        ) => Promise<RoomRecord>;
+      }
+    ).ensureMember;
+    await expect(ensureMember.call(service, healRecord, "member_1")).rejects.toThrow(
+      /does not support session persistence \(member member_1\)/,
+    );
+    expect(archive).toHaveBeenCalledTimes(1);
+    // Let the room reach its resting state so cleanup does not race writes.
+    await waitForRoom(
+      service,
+      room.id,
+      (currentRoom) => currentRoom.status === "closing" && currentRoom.summary !== null,
+    );
+  });
+
+  test("v1 rooms refuse mid-room joins without touching the roster", async () => {
+    // Design §7.2.1 third patch: promptVersion < 2 rooms never upgraded and
+    // the join mechanism is v2-only; the rpc_error names the way out.
+    const { service } = await buildService(null);
+    const room = await service.create(createInput());
+    const store = new RoomStore(roomsDir, logger);
+    await store.update(room.id, (current) => ({
+      ...current,
+      promptVersion: 1,
+      status: "discussing",
+    }));
+
+    await expect(
+      service.addMember(room.id, { provider: "codex", persona: "第五人" }),
+    ).rejects.toThrow(/旧版本/);
+
+    const { room: after } = await service.get(room.id);
+    expect(after?.members).toHaveLength(3);
+    expect(
+      after?.transcript.some((entry) => entry.kind === "system" && entry.text.includes("加入房间")),
+    ).toBe(false);
+    expect(after?.round.remainingMemberIds).toHaveLength(0);
+    // The v2 path keeps working (covered separately by the addMember suite).
+  });
+
+  test("a stale checkpoint reply is dropped at the backfill boundary and the fresh run settles the interjection", async () => {
+    // Design §7.7: round_end run1 holds on the gate with a pre-interjection
+    // snapshot; the interjection dispatches run2 and overwrites the binding.
+    // run1's reply must be dropped at the service backfill boundary — had it
+    // been consumed it would have settled nothing (its snapshot is empty) and
+    // opened round 2 with the interjection still queued.
+    const holdCheckpoint = deferred<void>();
+    const { service, client } = await buildService(null, {
+      holdCheckpoint,
+      answerUser: true,
+    });
+    const warn = vi.spyOn(logger, "warn");
+    const base = createInput();
+    const room = await service.create({ ...base, members: base.members.slice(0, 2) });
+    await service.start(room.id);
+    await waitForRoom(service, room.id, hasTwoMemberEntries);
+    // run1's checkpoint prompt is out (past its snapshot point) before the
+    // interjection dispatches.
+    await waitFor(() => (moderatorCheckpointPrompts(client).length > 0 ? true : null));
+
+    await service.interject(room.id, "先等等");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 120));
+    holdCheckpoint.resolve();
+
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    // run1 was dropped by the runId mismatch; the serialized run2 listed the
+    // interjection (queued snapshot) and settled it — the observable
+    // difference vs a consumed run1 is the interjection's final status.
+    expect(closing.interjections[0]?.status).toBe("answered");
+    expect(
+      closing.transcript.some((entry) => entry.kind === "moderator" && entry.text === "收到"),
+    ).toBe(true);
+    // The mismatch was warned, not silent.
+    expect(
+      warn.mock.calls.some((args) => String(args.at(-1)).includes("checkpointRunId mismatch")),
+    ).toBe(true);
+    // Invariant: the checkpoint prompt's Pending section lists only queued
+    // interjections — the prompt that carried "先等等" is exactly the run whose
+    // snapshot was queued; later checkpoint prompts never repeat it in the
+    // Pending section once answered (their recent-transcript section may quote
+    // it, which is not a pending listing).
+    expect(
+      moderatorCheckpointPrompts(client).filter((prompt) =>
+        (prompt.split("Pending user interjections:")[1] ?? "").includes("先等等"),
+      ),
+    ).toHaveLength(1);
+    // The binding table drains after every run finishes (cleanup in the
+    // finally scope; multiple runs came and went).
+    const bindings = (service as unknown as { checkpointRunIds: Map<string, string> })
+      .checkpointRunIds;
+    expect(bindings.size).toBe(0);
   });
 });

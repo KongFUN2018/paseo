@@ -31,6 +31,18 @@ export type RoomEvent =
       nextMemberId?: string | null;
       reason?: string;
       userReply?: string | null;
+      /**
+       * Server-internal identity of the ask_moderator dispatch this reply
+       * answers (design §7.7). Never on the wire; matched at the service
+       * backfill boundary before the event reaches this reducer.
+       */
+      checkpointRunId?: string;
+      /**
+       * Interjection ids the checkpoint prompt actually listed (design §4.6.1).
+       * Server-internal snapshot taken when the prompt was built; answer_user
+       * settles exactly these entries, never the whole queued set.
+       */
+      interjectionIds?: readonly string[];
     }
   | { type: "turn_timeout"; at: string }
   | { type: "user_pause"; at: string }
@@ -240,8 +252,24 @@ function handleFailure(
   return startNextTurn(record, at, null);
 }
 
-function pendingInterjections(record: RoomRecord) {
-  return record.interjections.filter((interjection) => interjection.status === "queued");
+/**
+ * queued → delivered (design §4.6.1, 2026-10-25 R9 #1): delivered means the
+ * moderator checkpoint has presented the interjection once — NOT that a
+ * member's delivery horizon covered it. Every dispatched checkpoint
+ * eventually replies (real decision or deterministic fallback), so every
+ * interjection is guaranteed exactly one prompt listing and one settlement:
+ * seen → delivered, answered → answered. Seen entries never re-enter a later
+ * prompt, and `decidedAt` stays untouched — it belongs to answered.
+ */
+function markSeenInterjectionsDelivered(
+  record: RoomRecord,
+  event: Extract<RoomEvent, { type: "moderator_checkpoint_ready" }>,
+): void {
+  const seen = new Set(event.interjectionIds ?? []);
+  for (const interjection of record.interjections) {
+    if (!seen.has(interjection.id) || interjection.status !== "queued") continue;
+    interjection.status = "delivered";
+  }
 }
 
 function appendRoundMarker(record: RoomRecord, at: string, roundIndex: number): void {
@@ -417,6 +445,22 @@ function handleResume(
   return startTurn(record, interruptedMemberId, event.at);
 }
 
+/** Per-entry answer_user settlement (design §4.6.1). */
+function settleAnsweredInterjections(
+  record: RoomRecord,
+  event: Extract<RoomEvent, { type: "moderator_checkpoint_ready" }>,
+): void {
+  // Only the interjections the checkpoint prompt actually listed are
+  // answered; entries queued while the run was in flight stay queued for the
+  // next checkpoint.
+  const answered = new Set(event.interjectionIds ?? []);
+  for (const interjection of record.interjections) {
+    if (!answered.has(interjection.id) || interjection.status === "answered") continue;
+    interjection.status = "answered";
+    interjection.decidedAt = event.at;
+  }
+}
+
 function handleCheckpoint(
   record: RoomRecord,
   event: Extract<RoomEvent, { type: "moderator_checkpoint_ready" }>,
@@ -425,13 +469,14 @@ function handleCheckpoint(
   if (record.status !== "discussing") return [];
   const checkpoint = record.pendingCheckpoint ?? null;
   if (checkpoint === null || record.turn.status !== "idle") {
-    // Stale duplicate reply: every ask_moderator sets pendingCheckpoint while
-    // no speaker is active, so a reply that matches no outstanding checkpoint,
-    // or one landing while a member is already speaking, comes from a second
-    // runModerator that raced the first (an interjection checkpoint fired
-    // while a round_end run was still in flight; 2026-10-25 acceptance §4).
-    // Acting on it would start a second concurrent member turn, and the next
-    // prompt for the still-streaming member would fail on AgentManager's
+    // Last-resort assertion (defense line ③, design §7.7): the checkpointRunId
+    // match at the service backfill boundary is the primary defense and the
+    // per-room run serialization the second. This guard survives for the one
+    // window they cannot cover — the reply's id is still "current" while a
+    // turn is already active (e.g. pendingCheckpoint still holds an
+    // interjection but the room moved on via user_resume's startTurn). Acting
+    // on such a reply would start a second concurrent member turn and the
+    // next prompt for the still-streaming member would fail on AgentManager's
     // active-run guard. Drop it and leave the pending checkpoint untouched.
     return [];
   }
@@ -447,12 +492,15 @@ function handleCheckpoint(
       text: event.userReply,
       turnId: null,
     });
-    for (const interjection of pendingInterjections(record)) {
-      interjection.status = "answered";
-      interjection.decidedAt = event.at;
-    }
+    settleAnsweredInterjections(record, event);
     record.updatedAt = event.at;
   }
+  // Snapshot settlement (design §4.6.1, 2026-10-25 R9 #1): the ids this
+  // prompt listed have now been presented to the moderator once. Anything
+  // still queued settles to delivered (answer_user already settled its ids
+  // to answered above); ids queued after the snapshot stay queued for the
+  // next checkpoint.
+  markSeenInterjectionsDelivered(record, event);
 
   if (checkpoint === "summary") {
     record.status = "closing";
@@ -558,8 +606,10 @@ export function stepRoomScheduler(record: RoomRecord, event: RoomEvent): Schedul
 
     case "moderator_summary_ready": {
       // A late summary must not write into a closed room or one sent back to
-      // discussing by an interjection.
-      if (next.status !== "closing") break;
+      // discussing by an interjection. A second summary run (double close or
+      // the closing re-ask heal) whose reply lands after the first one wrote
+      // must not append a second summary entry either (design §7.2.1 residual).
+      if (next.status !== "closing" || next.summary !== null) break;
       appendEntry(next, {
         at: event.at,
         kind: "moderator",

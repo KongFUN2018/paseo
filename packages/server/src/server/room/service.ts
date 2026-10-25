@@ -119,6 +119,14 @@ export class RoomService {
   private readonly chains = new Map<string, Promise<unknown>>();
   /** In-flight moderator run per room; checkpoints run one at a time (§4 fix). */
   private readonly moderatorRuns = new Map<string, Promise<void>>();
+  /**
+   * Identity of the latest ask_moderator dispatch per room (design §7.7).
+   * Each dispatch overwrites; the reply must match the current entry or it is
+   * a stale run whose checkpoint slot a newer dispatch already took. Cleared
+   * in runModerator's finally; in-memory only, so a daemon restart starts
+   * from an empty (consistent) table.
+   */
+  private readonly checkpointRunIds = new Map<string, string>();
   private readonly turnTimers = new Map<string, NodeJS.Timeout>();
   private readonly latest = new Map<string, RoomRecord>();
   /** Last room files fingerprint per room for the turn-prompt diff (design §8.2). */
@@ -283,6 +291,14 @@ export class RoomService {
   async addMember(roomId: string, input: AddRoomMemberInput): Promise<RoomRecord> {
     return this.serialize(roomId, async () => {
       const record = await this.requireRoom(roomId);
+      // v1 rooms never upgrade (reopen keeps promptVersion, §5.3) and the whole
+      // join mechanism is bound to the v2 contract; refuse instead of injecting
+      // v2 behavior into a legacy room (§7.2.1 third patch).
+      if (record.promptVersion < 2) {
+        throw new Error(
+          `Room ${roomId}: 该房间由旧版本创建（promptVersion ${record.promptVersion}），请新建房间以使用中途加人`,
+        );
+      }
       if (record.status !== "discussing" && record.status !== "interrupted") {
         throw new Error(
           `Room is ${record.status}; members can only join while discussing or interrupted`,
@@ -333,7 +349,7 @@ export class RoomService {
       );
       if (!agent.capabilities.supportsSessionPersistence) {
         // Roll the probe agent back; the roster was never touched.
-        await this.options.agentManager.archiveAgent(agent.id).catch(() => undefined);
+        await this.archiveRollback(agent.id);
         throw new Error(`Provider ${draft.provider} does not support session persistence`);
       }
       const member: RoomMember = { ...draft, agentId: agent.id, status: "ready" };
@@ -344,7 +360,7 @@ export class RoomService {
         );
       } catch (error) {
         // Persisting the roster failed: roll the agent back so nothing leaks.
-        await this.options.agentManager.archiveAgent(agent.id).catch(() => undefined);
+        await this.archiveRollback(agent.id);
         throw error;
       }
     });
@@ -471,7 +487,12 @@ export class RoomService {
           // run would fail AgentManager's active-run guard and feed a fallback
           // decision while the first run's late reply also lands, breaking the
           // one-turn-at-a-time invariant (2026-10-25 acceptance §4).
-          this.queueModeratorRun(roomId, command.checkpoint);
+          // The dispatch id is the root fix for the racing-reply class (§7.7):
+          // a late reply whose dispatch was superseded is dropped at the
+          // backfill boundary instead of being guessed at by the reducer.
+          const checkpointRunId = `cpt_${randomUUID().slice(0, 8)}`;
+          this.checkpointRunIds.set(roomId, checkpointRunId);
+          this.queueModeratorRun(roomId, command.checkpoint, checkpointRunId);
           return;
         case "prompt_member":
           void this.runMemberTurn(roomId, command.memberId).catch((error) => {
@@ -500,56 +521,78 @@ export class RoomService {
     if (!workspaceDirectory) {
       throw new Error(`Workspace ${record.workspaceId} not found`);
     }
-    let next = record;
-    if (!next.moderator.agentId) {
-      const agent = await this.options.agentManager.createAgent(
-        this.memberConfig(
-          {
-            provider: next.moderator.provider,
-            model: next.moderator.model,
-            modeId: next.moderator.modeId,
-          },
-          workspaceDirectory,
-          buildModeratorSystemPrompt({
+    // Every agent this pass creates; a persistence-check failure archives all
+    // of them so a bad provider choice never leaks agent records (§7.2.1).
+    // The moderator is not probed (its runs degrade deterministically, §7.2.1)
+    // but is rolled back with the rest when a member fails the probe.
+    const createdAgentIds: string[] = [];
+    try {
+      let next = record;
+      if (!next.moderator.agentId) {
+        const agent = await this.options.agentManager.createAgent(
+          this.memberConfig(
+            {
+              provider: next.moderator.provider,
+              model: next.moderator.model,
+              modeId: next.moderator.modeId,
+            },
             workspaceDirectory,
-            roomName: next.name,
-            members: next.members,
-          }),
-        ),
-        undefined,
-        {
-          workspaceId: next.workspaceId,
-          labels: { [ROOM_ID_LABEL]: next.id },
-          initialTitle: `Room moderator · ${next.name}`,
-        },
-      );
-      next = { ...next, moderator: { ...next.moderator, agentId: agent.id } };
-    }
-    const members = [...next.members];
-    for (let index = 0; index < members.length; index++) {
-      const member = members[index]!;
-      if (member.agentId) continue;
-      const agent = await this.options.agentManager.createAgent(
-        this.memberConfig(
-          member,
-          workspaceDirectory,
-          buildMemberSystemPrompt({
-            promptVersion: next.promptVersion,
-            roomName: next.name,
+            buildModeratorSystemPrompt({
+              workspaceDirectory,
+              roomName: next.name,
+              members: next.members,
+            }),
+          ),
+          undefined,
+          {
+            workspaceId: next.workspaceId,
+            labels: { [ROOM_ID_LABEL]: next.id },
+            initialTitle: `Room moderator · ${next.name}`,
+          },
+        );
+        createdAgentIds.push(agent.id);
+        next = { ...next, moderator: { ...next.moderator, agentId: agent.id } };
+      }
+      const members = [...next.members];
+      for (let index = 0; index < members.length; index++) {
+        const member = members[index]!;
+        if (member.agentId) continue;
+        const agent = await this.options.agentManager.createAgent(
+          this.memberConfig(
             member,
-            filesDir: roomFilesDirOf(next.artifactPath),
-          }),
-        ),
-        undefined,
-        {
-          workspaceId: next.workspaceId,
-          labels: { [ROOM_ID_LABEL]: next.id },
-          initialTitle: `Room member ${member.id} · ${next.name}`,
-        },
-      );
-      members[index] = { ...member, agentId: agent.id, status: "ready" };
+            workspaceDirectory,
+            buildMemberSystemPrompt({
+              promptVersion: next.promptVersion,
+              roomName: next.name,
+              member,
+              filesDir: roomFilesDirOf(next.artifactPath),
+            }),
+          ),
+          undefined,
+          {
+            workspaceId: next.workspaceId,
+            labels: { [ROOM_ID_LABEL]: next.id },
+            initialTitle: `Room member ${member.id} · ${next.name}`,
+          },
+        );
+        createdAgentIds.push(agent.id);
+        if (!agent.capabilities.supportsSessionPersistence) {
+          // Same probe and verdict as addMember (§7.2 step 2); the room record
+          // was never written, so archiving the created agents is the whole
+          // rollback. Members stay pending; retry start with another provider.
+          throw new Error(
+            `Provider ${member.provider} does not support session persistence (member ${member.id})`,
+          );
+        }
+        members[index] = { ...member, agentId: agent.id, status: "ready" };
+      }
+      return { ...next, members };
+    } catch (error) {
+      for (const agentId of createdAgentIds) {
+        await this.archiveRollback(agentId);
+      }
+      throw error;
     }
-    return { ...next, members };
   }
 
   /**
@@ -584,6 +627,16 @@ export class RoomService {
         initialTitle: `Room member ${member.id} · ${record.name}`,
       },
     );
+    if (!agent.capabilities.supportsSessionPersistence) {
+      // Same probe and verdict as addMember / ensureAgents (§7.2.1): the
+      // self-heal path fails loudly here instead of at the member's first
+      // turn; the roster entry was already applied, so only the probe agent
+      // needs rolling back. The command error keeps the member pending.
+      await this.archiveRollback(agent.id);
+      throw new Error(
+        `Provider ${member.provider} does not support session persistence (member ${member.id})`,
+      );
+    }
     const members = [...record.members];
     members[index] = { ...member, agentId: agent.id, status: "ready" };
     return { ...record, members };
@@ -601,6 +654,19 @@ export class RoomService {
       modeId: member.modeId ?? undefined,
       systemPrompt,
     };
+  }
+
+  /**
+   * Roll a rollback-path agent back; a failed archive logs instead of
+   * swallowing silently so leaked agent records stay visible (§7.2.1 P1-5).
+   */
+  private async archiveRollback(agentId: string): Promise<void> {
+    await this.options.agentManager.archiveAgent(agentId).catch((err: unknown) => {
+      this.options.logger.warn(
+        { err, agentId },
+        "archiveAgent rollback failed; agent record leaked",
+      );
+    });
   }
 
   private collectAgentIds(record: RoomRecord): string[] {
@@ -627,9 +693,12 @@ export class RoomService {
   private queueModeratorRun(
     roomId: string,
     checkpoint: "opening" | "round_end" | "interjection" | "summary",
+    checkpointRunId: string,
   ): void {
     const previous = this.moderatorRuns.get(roomId) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(() => this.runModerator(roomId, checkpoint));
+    const run = previous
+      .catch(() => undefined)
+      .then(() => this.runModerator(roomId, checkpoint, checkpointRunId));
     const tail = run.catch(() => undefined);
     this.moderatorRuns.set(roomId, tail);
     void tail.finally(() => {
@@ -643,74 +712,106 @@ export class RoomService {
   private async runModerator(
     roomId: string,
     checkpoint: "opening" | "round_end" | "interjection" | "summary",
+    checkpointRunId: string,
   ): Promise<void> {
-    const record = await this.store.get(roomId);
-    if (!record?.moderator.agentId) {
-      return;
-    }
-    let prompt = buildCheckpointPrompt({
-      round: record.round.index,
-      turnCount: record.turn.index,
-      roster: buildRosterText(record),
-      recentTranscript: this.recentTranscript(record),
-      pendingInterjections: this.pendingInterjectionText(record),
-    });
-    if (checkpoint === "opening") {
-      prompt = buildOpeningPrompt(record.topic);
-    } else if (checkpoint === "summary") {
-      prompt = buildSummaryPrompt();
-    }
-    let text = "";
     try {
-      const result = await this.options.agentManager.runAgent(record.moderator.agentId, prompt);
-      text = result.finalText;
-    } catch (error) {
-      this.options.logger.warn(
-        { err: error, roomId, checkpoint },
-        "Moderator run failed; using deterministic fallback",
-      );
-    }
+      const record = await this.store.get(roomId);
+      if (!record?.moderator.agentId) {
+        return;
+      }
+      // Snapshot of the interjections this prompt actually lists (§4.6.1):
+      // the reply may only settle these entries, never interjections that
+      // queue while the run is in flight.
+      const interjectionIds = record.interjections
+        .filter((entry) => entry.status === "queued")
+        .map((entry) => entry.id);
+      let prompt = buildCheckpointPrompt({
+        round: record.round.index,
+        turnCount: record.turn.index,
+        roster: buildRosterText(record),
+        recentTranscript: this.recentTranscript(record),
+        pendingInterjections: this.pendingInterjectionText(record),
+      });
+      if (checkpoint === "opening") {
+        prompt = buildOpeningPrompt(record.topic);
+      } else if (checkpoint === "summary") {
+        prompt = buildSummaryPrompt();
+      }
+      let text = "";
+      try {
+        const result = await this.options.agentManager.runAgent(record.moderator.agentId, prompt);
+        text = result.finalText;
+      } catch (error) {
+        this.options.logger.warn(
+          { err: error, roomId, checkpoint },
+          "Moderator run failed; using deterministic fallback",
+        );
+      }
 
-    if (checkpoint === "summary") {
-      const summary = text.trim().length > 0 ? text.trim() : "（主持人总结不可用。）";
-      await this.serialize(roomId, async () => {
-        const current = await this.requireRoom(roomId);
-        await this.applyStep(current, {
-          type: "moderator_summary_ready",
-          at: this.stamp(),
-          summary,
+      if (checkpoint === "summary") {
+        const summary = text.trim().length > 0 ? text.trim() : "（主持人总结不可用。）";
+        await this.serialize(roomId, async () => {
+          const current = await this.requireRoom(roomId);
+          await this.applyStep(current, {
+            type: "moderator_summary_ready",
+            at: this.stamp(),
+            summary,
+          });
         });
-      });
-      // The room now sits in closing with the summary visible; the user
-      // confirms by calling close() again (design §3.6).
-      return;
-    }
+        // The room now sits in closing with the summary visible; the user
+        // confirms by calling close() again (design §3.6).
+        return;
+      }
 
-    if (checkpoint === "opening") {
-      const opening = parseModeratorOpening(text) ?? fallbackOpening(text);
+      if (checkpoint === "opening") {
+        const opening = parseModeratorOpening(text) ?? fallbackOpening(text);
+        await this.serializeFeed(roomId, {
+          type: "moderator_opening_ready",
+          at: this.stamp(),
+          opening: opening.opening,
+          nextMemberId: opening.nextMemberId,
+        });
+        return;
+      }
+
+      // Backfill boundary match (§7.7): the only place holding both the
+      // dispatch id and the reply. A mismatch means a newer dispatch already
+      // took the checkpoint slot — warn and drop before the reducer ever sees
+      // the event. Covers the fallback reply of a failed run too (it flows
+      // through the same decision path below).
+      const expectedRunId = this.checkpointRunIds.get(roomId);
+      if (checkpointRunId !== expectedRunId) {
+        this.options.logger.warn(
+          { roomId, checkpoint, checkpointRunId, expectedRunId },
+          "Dropping stale moderator checkpoint reply (checkpointRunId mismatch)",
+        );
+        return;
+      }
+      const decision = parseModeratorDecision(text) ?? {
+        action: "continue" as const,
+        nextMemberId: null,
+        reason: "moderator reply unusable",
+        userReply: null,
+      };
       await this.serializeFeed(roomId, {
-        type: "moderator_opening_ready",
+        type: "moderator_checkpoint_ready",
         at: this.stamp(),
-        opening: opening.opening,
-        nextMemberId: opening.nextMemberId,
+        action: decision.action,
+        nextMemberId: decision.nextMemberId,
+        reason: decision.reason,
+        userReply: decision.userReply,
+        checkpointRunId,
+        interjectionIds,
       });
-      return;
+    } finally {
+      // Bindings live exactly as long as their run: cleanup stays in the
+      // finally scope so early returns, thrown errors and the mismatch drop
+      // all release the entry. A superseding dispatch has already overwritten
+      // the slot, so the identity check keeps its binding intact.
+      if (this.checkpointRunIds.get(roomId) === checkpointRunId) {
+        this.checkpointRunIds.delete(roomId);
+      }
     }
-
-    const decision = parseModeratorDecision(text) ?? {
-      action: "continue" as const,
-      nextMemberId: null,
-      reason: "moderator reply unusable",
-      userReply: null,
-    };
-    await this.serializeFeed(roomId, {
-      type: "moderator_checkpoint_ready",
-      at: this.stamp(),
-      action: decision.action,
-      nextMemberId: decision.nextMemberId,
-      reason: decision.reason,
-      userReply: decision.userReply,
-    });
   }
 
   private async runMemberTurn(roomId: string, memberId: string): Promise<void> {
