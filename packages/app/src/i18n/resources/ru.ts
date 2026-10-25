@@ -3015,6 +3015,7 @@ export const ru: TranslationResources = {
       moderatorOpening: "Ведущий · Вступление",
       moderator: "Ведущий",
       sentPending: "Отправлено · будет учтено на следующей контрольной точке",
+      sentDelivered: "Доставлено ведущему",
       sendFailed: "Не удалось отправить",
     },
     checkpoint: {

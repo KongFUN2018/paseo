@@ -2997,6 +2997,7 @@ export const ar: TranslationResources = {
       moderatorOpening: "المنسق · الافتتاح",
       moderator: "المنسق",
       sentPending: "تم الإرسال · ستتم الإجابة في نقطة التحقق التالية",
+      sentDelivered: "تم التسليم للمنسق",
       sendFailed: "فشل الإرسال",
     },
     checkpoint: {

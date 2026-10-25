@@ -4,6 +4,7 @@ import { Paperclip } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { StyleSheet } from "react-native-unistyles";
+import type { RoomRecord } from "@getpaseo/protocol/room/types";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Alert } from "@/components/ui/alert";
@@ -48,6 +49,33 @@ export interface RoomPanelContentProps {
 /** Local optimistic interjection row, reconciled by interjectionId (§4.6). */
 interface LocalInterjection extends PendingInterjection {
   interjectionId?: string;
+}
+
+/**
+ * Optimistic rows still lacking their transcript entry, each carrying the
+ * daemon-side interjection status for the two-state caption (§4.6.1).
+ */
+function visibleInterjectionsWithStatus(
+  room: RoomRecord,
+  localInterjections: LocalInterjection[],
+): LocalInterjection[] {
+  // A confirmed local row disappears the moment its transcript entry lands.
+  const deliveredInterjectionIds = new Set<string>();
+  for (const entry of room.transcript) {
+    if (entry.kind === "interjection" && entry.interjectionId) {
+      deliveredInterjectionIds.add(entry.interjectionId);
+    }
+  }
+  const statusById = new Map(room.interjections.map((entry) => [entry.id, entry.status]));
+  const rows: LocalInterjection[] = [];
+  for (const row of localInterjections) {
+    if (row.interjectionId && deliveredInterjectionIds.has(row.interjectionId)) continue;
+    rows.push({
+      ...row,
+      status: row.interjectionId ? statusById.get(row.interjectionId) : undefined,
+    });
+  }
+  return rows;
 }
 
 export function RoomPanelContent({
@@ -238,16 +266,7 @@ export function RoomPanelContent({
   const turnStream = room.turn.memberId ? streams[room.turn.memberId] : undefined;
   const streamHasText = Boolean(turnStream && turnStream.text.length > 0);
   const streamDone = Boolean(turnStream?.done);
-  // A confirmed local row disappears the moment its transcript entry lands.
-  const deliveredInterjectionIds = new Set<string>();
-  for (const entry of room.transcript) {
-    if (entry.kind === "interjection" && entry.interjectionId) {
-      deliveredInterjectionIds.add(entry.interjectionId);
-    }
-  }
-  const visibleInterjections = localInterjections.filter(
-    (row) => !(row.interjectionId && deliveredInterjectionIds.has(row.interjectionId)),
-  );
+  const visibleWithStatus = visibleInterjectionsWithStatus(room, localInterjections);
 
   return (
     <View style={styles.container} testID="room-panel-content">
@@ -269,7 +288,7 @@ export function RoomPanelContent({
           serverId={serverId}
           truncated={snapshot.truncated}
           active={isPanelActive}
-          pendingInterjections={visibleInterjections}
+          pendingInterjections={visibleWithStatus}
           files={filesQuery.data}
           onOpenFile={onOpenFile}
           onRetryInterjection={retryInterjection}

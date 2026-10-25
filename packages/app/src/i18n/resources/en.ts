@@ -3089,7 +3089,8 @@ export const en = {
       olderNotLoaded: "Earlier messages are not loaded",
       moderatorOpening: "Moderator · Opening",
       moderator: "Moderator",
-      sentPending: "Sent · will be addressed at the next checkpoint",
+      sentPending: "Submitted · will be addressed at the next checkpoint",
+      sentDelivered: "Delivered to the moderator",
       sendFailed: "Failed to send",
     },
     checkpoint: {

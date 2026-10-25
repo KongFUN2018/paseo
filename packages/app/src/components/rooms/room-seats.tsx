@@ -265,8 +265,12 @@ export function RoomSeats({
 }) {
   const { t } = useTranslation();
   const streams = useRoomStreamEntries(serverId, room.id);
+  // v1 rooms reject mid-room joins server-side (§7.2.1 third patch); hiding
+  // the entry is guidance, the rpc_error stays authoritative.
   const canAddMember =
-    (room.status === "discussing" || room.status === "interrupted") && room.members.length < 4;
+    (room.status === "discussing" || room.status === "interrupted") &&
+    room.members.length < 4 &&
+    room.promptVersion >= 2;
 
   const moderatorSeat = useMemo(
     () => (

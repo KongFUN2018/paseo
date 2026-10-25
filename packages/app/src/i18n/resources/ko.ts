@@ -2975,7 +2975,8 @@ export const ko: TranslationResources = {
       olderNotLoaded: "이전 발언은 불러오지 않았습니다",
       moderatorOpening: "진행자 · 오프닝",
       moderator: "진행자",
-      sentPending: "전송됨 · 다음 체크포인트에서 응답됩니다",
+      sentPending: "제출됨 · 다음 체크포인트에서 응답됩니다",
+      sentDelivered: "진행자에게 전달되었습니다",
       sendFailed: "전송 실패",
     },
     checkpoint: {

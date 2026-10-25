@@ -125,6 +125,16 @@ describe("RoomSeats", () => {
     expect(renderSeats(forming).queryByTestId("room-seat-add")).toBeNull();
   });
 
+  it("hides the add seat for v1 rooms (mid-room joins are v2-only)", () => {
+    // The server rejects the join authoritatively (§7.2.1 third patch);
+    // hiding the entry is just guidance.
+    const legacy = buildRoom({ promptVersion: 1 });
+    expect(renderSeats(legacy).queryByTestId("room-seat-add")).toBeNull();
+
+    const v2 = buildRoom({ promptVersion: 2 });
+    expect(renderSeats(v2).getByTestId("room-seat-add")).toBeTruthy();
+  });
+
   it("settles the speaking seat through researching → speaking as text streams in", () => {
     const room = buildRoom({
       turn: {

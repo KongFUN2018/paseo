@@ -2926,7 +2926,8 @@ export const zhCN: TranslationResources = {
       olderNotLoaded: "更早的发言未加载",
       moderatorOpening: "主持人 · 开场",
       moderator: "主持人",
-      sentPending: "已送达 · 将在下一检查点回应",
+      sentPending: "已提交 · 将在下一检查点回应",
+      sentDelivered: "已送达主持人",
       sendFailed: "发送失败",
     },
     checkpoint: {

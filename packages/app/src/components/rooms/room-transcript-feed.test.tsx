@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlatList, FlatListProps } from "react-native";
 import type { RoomRecord, RoomTranscriptEntry } from "@getpaseo/protocol/room/types";
 import { applyRoomPartial, clearRoomStreams } from "@/rooms/room-stream-store";
-import { RoomTranscriptFeed, bottomStickOffset } from "./room-transcript-feed";
+import {
+  RoomTranscriptFeed,
+  bottomStickOffset,
+  type PendingInterjection,
+} from "./room-transcript-feed";
 
 // Initializes the real i18n instance (inline en resources) so useTranslation
 // resolves strings exactly as the app does.
@@ -158,14 +162,18 @@ function buildRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
 
 const noop = () => {};
 
-function renderFeed(room: RoomRecord, active = true) {
+function renderFeed(
+  room: RoomRecord,
+  active = true,
+  pendingInterjections: readonly PendingInterjection[] = [],
+) {
   return render(
     <RoomTranscriptFeed
       room={room}
       serverId="s1"
       truncated={false}
       active={active}
-      pendingInterjections={[]}
+      pendingInterjections={pendingInterjections}
       files={[]}
       onOpenFile={noop}
       onRetryInterjection={noop}
@@ -227,6 +235,78 @@ beforeEach(() => {
 
 // Vitest globals are off in this project, so RTL's auto-cleanup never registers.
 afterEach(cleanup);
+
+describe("interjection status captions (§4.6.1, R9 #1)", () => {
+  function interjectionRoom(status: "queued" | "delivered" | "answered"): RoomRecord {
+    return buildRoom({
+      transcript: [
+        entry(1, "first statement"),
+        {
+          seq: 2,
+          at: "2026-10-25T08:10:00.000Z",
+          kind: "interjection",
+          memberId: null,
+          agentId: null,
+          text: "等等",
+          interjectionId: "int_1",
+        },
+      ],
+      interjections: [
+        {
+          id: "int_1",
+          text: "等等",
+          createdAt: "2026-10-25T08:10:00.000Z",
+          status,
+          decidedAt: null,
+        },
+      ],
+      lastSeq: 2,
+    });
+  }
+
+  it("carries the caption on the transcript interjection row, joined from the daemon status", () => {
+    // queued keeps the checkpoint promise; delivered states the moderator
+    // checkpoint has presented it once; answered hides the caption — the
+    // moderator's reply entry in the feed is the response. Renders unmount
+    // between states: RTL keeps every render of one test in the DOM.
+    const queued = renderFeed(interjectionRoom("queued"));
+    expect(queued.getByTestId("room-transcript-2")).toBeTruthy();
+    expect(queued.getByText("Submitted · will be addressed at the next checkpoint")).toBeTruthy();
+    queued.unmount();
+
+    const delivered = renderFeed(interjectionRoom("delivered"));
+    expect(delivered.getByText("Delivered to the moderator")).toBeTruthy();
+    expect(
+      delivered.queryByText("Submitted · will be addressed at the next checkpoint"),
+    ).toBeNull();
+    delivered.unmount();
+
+    const answered = renderFeed(interjectionRoom("answered"));
+    expect(answered.queryByText("Delivered to the moderator")).toBeNull();
+    expect(answered.queryByText("Submitted · will be addressed at the next checkpoint")).toBeNull();
+  });
+
+  it("keeps the fallback caption on the optimistic row while it lives", () => {
+    const confirmed: PendingInterjection = {
+      localId: "local-1",
+      text: "等等",
+      state: "confirmed",
+      status: "queued",
+    };
+    const view = renderFeed(buildRoom(), true, [confirmed]);
+    expect(view.getByTestId("room-transcript-pending-local-1")).toBeTruthy();
+    expect(view.getByText("Submitted · will be addressed at the next checkpoint")).toBeTruthy();
+    view.unmount();
+
+    const optimistic: PendingInterjection = {
+      localId: "local-3",
+      text: "等等",
+      state: "pending",
+    };
+    const inFlight = renderFeed(buildRoom(), true, [optimistic]);
+    expect(inFlight.getByText("Submitted · will be addressed at the next checkpoint")).toBeTruthy();
+  });
+});
 
 describe("bottomStickOffset", () => {
   it("returns null until both heights are measured", () => {

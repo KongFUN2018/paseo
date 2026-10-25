@@ -3003,7 +3003,8 @@ export const ptBR: TranslationResources = {
       olderNotLoaded: "Mensagens anteriores não carregadas",
       moderatorOpening: "Moderador · Abertura",
       moderator: "Moderador",
-      sentPending: "Enviado · será respondido no próximo ponto de verificação",
+      sentPending: "Enviada · será respondida no próximo ponto de verificação",
+      sentDelivered: "Entregue ao moderador",
       sendFailed: "Falha ao enviar",
     },
     checkpoint: {

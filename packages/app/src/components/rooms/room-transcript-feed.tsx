@@ -3,7 +3,12 @@ import { FlatList, Text, View, type FlatListProps } from "react-native";
 import { File, Database, Image as ImageIcon, Table } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
-import type { RoomMember, RoomRecord, RoomTranscriptEntry } from "@getpaseo/protocol/room/types";
+import type {
+  RoomInterjection,
+  RoomMember,
+  RoomRecord,
+  RoomTranscriptEntry,
+} from "@getpaseo/protocol/room/types";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
@@ -32,6 +37,12 @@ export interface PendingInterjection {
   localId: string;
   text: string;
   state: "pending" | "confirmed" | "error";
+  /**
+   * Daemon-side interjection status for confirmed rows (§4.6.1): fallback
+   * caption on the optimistic row only — the authoritative caption rides the
+   * transcript entry once it lands. Absent while the RPC is in flight.
+   */
+  status?: "queued" | "delivered" | "answered";
 }
 
 type FeedRow =
@@ -39,13 +50,20 @@ type FeedRow =
   | { type: "system"; key: string; entry: RoomTranscriptEntry }
   | { type: "moderatorCard"; key: string; entry: RoomTranscriptEntry }
   | { type: "member"; key: string; entry: RoomTranscriptEntry; cont: boolean }
-  | { type: "interjection"; key: string; entry: RoomTranscriptEntry }
+  | {
+      type: "interjection";
+      key: string;
+      entry: RoomTranscriptEntry;
+      /** Daemon-side status joined from room.interjections (§4.6.1, R9 #1). */
+      status?: RoomInterjection["status"];
+    }
   | { type: "research"; key: string }
   | { type: "streaming"; key: string }
   | { type: "pending"; key: string; pending: PendingInterjection };
 
 const ROUND_MARKER_PATTERN = /^round:(\d+)$/u;
 
+/** Non-interjection transcript dispatch; interjection rows join daemon status above. */
 function transcriptEntryRow(entry: RoomTranscriptEntry, cont: boolean): FeedRow {
   switch (entry.kind) {
     case "system":
@@ -56,7 +74,8 @@ function transcriptEntryRow(entry: RoomTranscriptEntry, cont: boolean): FeedRow 
     case "member":
       return { type: "member", key: `seq-${entry.seq}`, entry, cont };
     case "interjection":
-      return { type: "interjection", key: `seq-${entry.seq}`, entry };
+      // Handled inline in buildFeedRows (joins the daemon status); unreachable.
+      throw new Error("interjection rows are built in buildFeedRows");
   }
 }
 
@@ -66,6 +85,9 @@ function buildFeedRows(
   streams: Record<string, { text: string; done: boolean }>,
   pendingInterjections: readonly PendingInterjection[],
 ): FeedRow[] {
+  // Daemon-side status per interjection id: feeds the caption on the
+  // transcript's own interjection rows (§4.6.1, R9 #1).
+  const statusById = new Map(room.interjections.map((entry) => [entry.id, entry.status]));
   const rows: FeedRow[] = [];
   if (truncated && room.transcript.length > 0) {
     rows.push({ type: "truncated", key: "transcript-truncated" });
@@ -79,7 +101,16 @@ function buildFeedRows(
       previous !== null &&
       previous.kind === "member" &&
       previous.memberId === entry.memberId;
-    rows.push(transcriptEntryRow(entry, cont));
+    if (entry.kind === "interjection") {
+      rows.push({
+        type: "interjection",
+        key: `seq-${entry.seq}`,
+        entry,
+        status: entry.interjectionId ? statusById.get(entry.interjectionId) : undefined,
+      });
+    } else {
+      rows.push(transcriptEntryRow(entry, cont));
+    }
     previous = entry;
   }
 
@@ -304,16 +335,35 @@ function SystemRow({ entry }: { entry: RoomTranscriptEntry }) {
   );
 }
 
-function InterjectionRow({ entry }: { entry: RoomTranscriptEntry }) {
+function InterjectionRow({
+  entry,
+  status,
+}: {
+  entry: RoomTranscriptEntry;
+  status?: RoomInterjection["status"];
+}) {
   const { t } = useTranslation();
   return (
-    <View style={styles.interjectionRow} testID={`room-transcript-${entry.seq}`}>
-      <View style={[styles.avatar, styles.youAvatar]}>
-        <Text style={styles.youAvatarChar}>{t("rooms.transcript.you").slice(0, 1)}</Text>
+    <View testID={`room-transcript-${entry.seq}`}>
+      <View style={styles.interjectionRow}>
+        <View style={[styles.avatar, styles.youAvatar]}>
+          <Text style={styles.youAvatarChar}>{t("rooms.transcript.you").slice(0, 1)}</Text>
+        </View>
+        <View style={styles.bubble}>
+          <Text style={styles.bubbleText}>{entry.text}</Text>
+        </View>
       </View>
-      <View style={styles.bubble}>
-        <Text style={styles.bubbleText}>{entry.text}</Text>
-      </View>
+      {/* Caption on the authoritative row (§4.6.1, R9 #1): queued keeps the
+          checkpoint promise, delivered states the moderator checkpoint has
+          presented it once, answered hides the caption — the moderator's
+          reply entry in the feed is the response. */}
+      {status === "queued" || status === "delivered" ? (
+        <Text style={styles.pendingMicro}>
+          {status === "delivered"
+            ? t("rooms.transcript.sentDelivered")
+            : t("rooms.transcript.sentPending")}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -341,7 +391,13 @@ function PendingInterjectionRow({
         </View>
       </View>
       {pending.state === "pending" || pending.state === "confirmed" ? (
-        <Text style={styles.pendingMicro}>{t("rooms.transcript.sentPending")}</Text>
+        // Two-state caption (§4.6.1): queued keeps the checkpoint promise,
+        // delivered/answered states a member's delivery horizon covered it.
+        <Text style={styles.pendingMicro}>
+          {pending.status && pending.status !== "queued"
+            ? t("rooms.transcript.sentDelivered")
+            : t("rooms.transcript.sentPending")}
+        </Text>
       ) : (
         <View style={styles.errorMicroRow}>
           <Text style={styles.errorMicro}>{t("rooms.transcript.sendFailed")}</Text>
@@ -480,7 +536,7 @@ export function RoomTranscriptFeed({
             />
           );
         case "interjection":
-          return <InterjectionRow entry={item.entry} />;
+          return <InterjectionRow entry={item.entry} status={item.status} />;
         case "research":
           return (
             <ResearchRow

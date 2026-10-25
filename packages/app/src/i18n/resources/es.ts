@@ -3021,7 +3021,8 @@ export const es: TranslationResources = {
       olderNotLoaded: "Los mensajes anteriores no están cargados",
       moderatorOpening: "Moderador · Apertura",
       moderator: "Moderador",
-      sentPending: "Enviado · se responderá en el próximo punto de control",
+      sentPending: "Enviada · se responderá en el próximo punto de control",
+      sentDelivered: "Entregada al moderador",
       sendFailed: "No se pudo enviar",
     },
     checkpoint: {

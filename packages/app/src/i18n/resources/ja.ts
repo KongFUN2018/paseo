@@ -2990,7 +2990,8 @@ export const ja: TranslationResources = {
       olderNotLoaded: "より前の発言は未読み込みです",
       moderatorOpening: "モデレーター · 開幕",
       moderator: "モデレーター",
-      sentPending: "送信済み · 次のチェックポイントで応答されます",
+      sentPending: "送信済み · 次のチェックポイントで対応されます",
+      sentDelivered: "モデレーターに届きました",
       sendFailed: "送信に失敗しました",
     },
     checkpoint: {

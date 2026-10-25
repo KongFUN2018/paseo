@@ -3031,7 +3031,8 @@ export const fr: TranslationResources = {
       olderNotLoaded: "Les messages antérieurs ne sont pas chargés",
       moderatorOpening: "Animateur · Ouverture",
       moderator: "Animateur",
-      sentPending: "Envoyé · sera traité au prochain point de contrôle",
+      sentPending: "Envoyée · sera traitée au prochain point de contrôle",
+      sentDelivered: "Livrée à l'animateur",
       sendFailed: "Échec de l'envoi",
     },
     checkpoint: {
