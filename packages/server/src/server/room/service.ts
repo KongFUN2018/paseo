@@ -167,6 +167,10 @@ export class RoomService {
       for (const target of targets) {
         if (!target.agentId) continue;
         try {
+          // Archived or deleted members still have a stored record but no live
+          // agent, and setTitle needs one. Their titles are not visible in the
+          // sidebar, so skipping them is correct, not a failure.
+          if (!this.options.agentManager.getAgent(target.agentId)) continue;
           const currentTitle = await this.options.agentManager.getTitle(target.agentId);
           if (!currentTitle || !isLegacyRoomAgentTitle(currentTitle)) continue;
           if (currentTitle === target.title) continue;

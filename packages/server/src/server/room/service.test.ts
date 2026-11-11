@@ -1373,4 +1373,18 @@ describe("RoomService with a scripted provider", () => {
 
     expect(await agentManager.getTitle(agentId)).toBe("Room member onboarding notes");
   });
+
+  test("skips agents that no longer exist instead of logging a failure", async () => {
+    const { service, agentManager } = await buildService(null);
+    const room = await service.create(createInput());
+    const started = await service.start(room.id);
+    const agentId = started.members[0]!.agentId!;
+
+    // Archive removes the live agent while the stored record survives, which is
+    // exactly the state real rooms are in after their members were archived.
+    await agentManager.archiveAgent(agentId);
+    expect(agentManager.getAgent(agentId)).toBeNull();
+
+    await expect(service.repairLegacyAgentTitles()).resolves.toBeUndefined();
+  });
 });
