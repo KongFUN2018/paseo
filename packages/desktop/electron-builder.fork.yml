@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Paseo fork (personal build) — installs side by side with the release app.
+#
+# Differences from electron-builder.yml:
+#   * appId / productName / executableName are unique, so Windows treats this as
+#     a separate application (own uninstall entry, Start-menu shortcut, app data).
+#   * The `paseo://` URL scheme is NOT claimed. Claiming it would steal agent
+#     deep links from the installed release.
+#   * Orange icon set, so the two apps are distinguishable on the taskbar.
+#
+# Build with the standard pipeline, then:
+#   npx electron-builder --config electron-builder.fork.yml --win --x64
+# ---------------------------------------------------------------------------
+npmRebuild: false
+appId: sh.kangkang.paseo.fork
+productName: Paseo Fork
+executableName: PaseoFork
+copyright: "Personal fork of Paseo (Apache-2.0)"
+afterPack: ./scripts/after-pack.js
+directories:
+  output: release-fork-v3
+files:
+  - dist/**/*
+  - "!**/*.map"
+  - "!node_modules/@getpaseo/*/src/**"
+  - "!node_modules/@getpaseo/**/*.test.*"
+  - "!node_modules/@getpaseo/**/*.spec.*"
+  - "!node_modules/@getpaseo/server/dist/server/web-ui/**"
+  - "!node_modules/@getpaseo/server/dist/server/builtin-plugins/**"
+  - "!node_modules/@getpaseo/*/.debug/**"
+  - "!node_modules/@getpaseo/*/.tasks/**"
+  - "!node_modules/@getpaseo/*/conversations/**"
+  - "!node_modules/@getpaseo/*/test-results/**"
+asarUnpack:
+  - dist/daemon/node-entrypoint-runner.js
+  - node_modules/@getpaseo/server/dist/server/terminal/shell-integration/**/*
+extraResources:
+  - from: ../server/dist/server/builtin-plugins
+    to: builtin-plugins
+  - from: ../app/dist
+    to: app-dist
+  - from: assets/editor-targets
+    to: editor-target-icons
+# No publishing target: this build never self-updates over the release channel.
+win:
+  artifactName: "PaseoFork-Setup-${version}-${arch}.${ext}"
+  icon: assets/icon-fork.ico
+  extraResources:
+    # Runtime window icon lookup reads resources/icon.ico then resources/icon.png.
+    - from: assets/icon-fork.ico
+      to: icon.ico
+    - from: assets/icon-fork.png
+      to: icon.png
+    - from: bin/paseo.cmd
+      to: bin/paseo.cmd
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: "PaseoFork-Setup-${version}-${arch}.${ext}"
+  shortcutName: "Paseo Fork"
+  uninstallDisplayName: "Paseo Fork"
