@@ -1313,9 +1313,9 @@ describe("RoomService with a scripted provider", () => {
 
     // The timeout fires (~300ms) and the fallback continues into round 2
     // instead of blocking the room forever.
-    await waitForRoom(service, room.id, (current) =>
-      current.transcript.some((entry) => entry.kind === "system" && entry.text === "round:2"),
-    );
+    const reachedRound2 = (current: { transcript: Array<{ kind: string; text: string }> }) =>
+      current.transcript.some((entry) => entry.kind === "system" && entry.text === "round:2");
+    await waitForRoom(service, room.id, reachedRound2);
 
     // Round 2's checkpoint hang times out the same way; the budget exhausts
     // and the room still reaches a proper closing with a summary — the full
@@ -1326,8 +1326,51 @@ describe("RoomService with a scripted provider", () => {
       (current) => current.status === "closing" && current.summary !== null,
     );
     expect(
-      closing.transcript.some((entry) => entry.kind === "moderator" && entry.text === "## 最终结论"),
+      closing.transcript.some(
+        (entry) => entry.kind === "moderator" && entry.text === "## 最终结论",
+      ),
     ).toBe(true);
     expect(closing.members.map((member) => member.status)).not.toContain("failed");
+  });
+
+  test("repairs legacy wire-id session titles without touching renamed ones", async () => {
+    const { service, agentManager } = await buildService(null);
+    const room = await service.create(createInput());
+    const started = await service.start(room.id);
+    const memberAgentIds = started.members
+      .map((member) => member.agentId)
+      .filter((id): id is string => Boolean(id));
+    const moderatorAgentId = started.moderator.agentId;
+    expect(memberAgentIds).toHaveLength(3);
+    expect(moderatorAgentId).toBeTruthy();
+
+    // Rewrite the titles to the pre-role format as an old daemon would have
+    // left them, and give one member a user-chosen title.
+    await agentManager.setTitle(memberAgentIds[0]!, `Room member member_1 · ${room.name}`);
+    await agentManager.setTitle(memberAgentIds[1]!, "我自己起的名字");
+    await agentManager.setTitle(moderatorAgentId!, `Room moderator · ${room.name}`);
+
+    await service.repairLegacyAgentTitles();
+
+    // Legacy titles now read like roles.
+    expect(await agentManager.getTitle(memberAgentIds[0]!)).toBe(`Member 1 · ${room.name}`);
+    expect(await agentManager.getTitle(moderatorAgentId!)).toBe(`主持人 · ${room.name}`);
+    // The hand-written title is untouched.
+    expect(await agentManager.getTitle(memberAgentIds[1]!)).toBe("我自己起的名字");
+    // A member created under the new format was never legacy, so it keeps the
+    // positional title it already had.
+    expect(await agentManager.getTitle(memberAgentIds[2]!)).toBe(`Member 3 · ${room.name}`);
+  });
+
+  test("ignores titles that merely start with the old prefix", async () => {
+    const { service, agentManager } = await buildService(null);
+    const room = await service.create(createInput());
+    const started = await service.start(room.id);
+    const agentId = started.members[0]!.agentId!;
+
+    await agentManager.setTitle(agentId, "Room member onboarding notes");
+    await service.repairLegacyAgentTitles();
+
+    expect(await agentManager.getTitle(agentId)).toBe("Room member onboarding notes");
   });
 });

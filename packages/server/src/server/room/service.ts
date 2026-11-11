@@ -9,7 +9,11 @@ import {
   type RoomRecord,
   type RoomSummary,
 } from "@getpaseo/protocol/room/types";
-import { roomMemberAgentTitle, roomModeratorAgentTitle } from "@getpaseo/protocol/room/labels";
+import {
+  roomMemberAgentTitle,
+  roomModeratorAgentTitle,
+  isLegacyRoomAgentTitle,
+} from "@getpaseo/protocol/room/labels";
 import { ROOM_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentSessionConfig, AgentTimelineItem } from "../agent/agent-sdk-types.js";
@@ -68,6 +72,8 @@ export type RoomAgentManager = Pick<
   | "archiveAgent"
   | "unarchiveSnapshot"
   | "getAgent"
+  | "getTitle"
+  | "setTitle"
 >;
 
 export interface CreateRoomInput {
@@ -137,6 +143,42 @@ export class RoomService {
   constructor(private readonly options: RoomServiceOptions) {
     this.store = new RoomStore(options.roomsDir, options.logger);
     this.now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * One-shot repair for sessions created before rooms named members by role:
+   * those agents still carry `Room member member_3 · <room>`. Titles are what
+   * the sidebar shows, and a wire id there tells the reader nothing.
+   *
+   * Only titles that exactly match the old generated format are rewritten, so a
+   * title the user typed by hand is never touched. Failures are logged and
+   * skipped rather than aborting startup: a stale title is cosmetic, a failed
+   * boot is not.
+   */
+  async repairLegacyAgentTitles(): Promise<void> {
+    for (const room of await this.store.list()) {
+      const targets: Array<{ agentId: string | null; title: string }> = [
+        { agentId: room.moderator.agentId, title: roomModeratorAgentTitle(room.name) },
+        ...room.members.map((member) => ({
+          agentId: member.agentId,
+          title: roomMemberAgentTitle(member, room.name),
+        })),
+      ];
+      for (const target of targets) {
+        if (!target.agentId) continue;
+        try {
+          const currentTitle = await this.options.agentManager.getTitle(target.agentId);
+          if (!currentTitle || !isLegacyRoomAgentTitle(currentTitle)) continue;
+          if (currentTitle === target.title) continue;
+          await this.options.agentManager.setTitle(target.agentId, target.title);
+        } catch (error) {
+          this.options.logger.warn(
+            { err: error, roomId: room.id, agentId: target.agentId },
+            "Failed to repair a legacy room agent title",
+          );
+        }
+      }
+    }
   }
 
   /** Daemon restart: rooms mid-flight become interrupted and never auto-resume (§8.3). */

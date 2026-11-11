@@ -43,3 +43,20 @@ export function roomModeratorAgentTitle(roomName: string): string {
   const trimmedRoomName = roomName.trim();
   return trimmedRoomName ? `主持人 · ${trimmedRoomName}` : "主持人";
 }
+
+/**
+ * Whether a title is a title this module generated *before* sessions were named
+ * by role, i.e. exactly `Room member member_N · <room>` or `Room moderator ·
+ * <room>`. Anything else is either the current format or a title the user typed
+ * by hand, and must be left alone.
+ *
+ * Matching the whole string (not a prefix) is what keeps a user's own
+ * "Room member onboarding notes" rename safe from being rewritten.
+ */
+export function isLegacyRoomAgentTitle(title: string): boolean {
+  const trimmed = title.trim();
+  return (
+    /^Room member member[_-]\d+(?: · .*)?$/u.test(trimmed) ||
+    /^Room moderator(?: · .*)?$/u.test(trimmed)
+  );
+}

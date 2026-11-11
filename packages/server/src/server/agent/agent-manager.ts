@@ -2104,6 +2104,13 @@ export class AgentManager {
     this.emitState(agent);
   }
 
+  /** Persisted title, or null when the record carries none. */
+  async getTitle(agentId: string): Promise<string | null> {
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    const title = record?.title?.trim();
+    return title ? title : null;
+  }
+
   async setTitle(agentId: string, title: string): Promise<void> {
     const agent = this.requireAgent(agentId);
     const normalizedTitle = title.trim();

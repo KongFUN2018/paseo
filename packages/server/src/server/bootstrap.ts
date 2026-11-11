@@ -1386,6 +1386,9 @@ export async function createPaseoDaemon(
     },
   });
   await roomService.interruptStaleRooms();
+  // Best-effort: sessions created before role-named titles keep a wire id in the
+  // sidebar. Runs after the interrupt pass so it sees the final room status.
+  await roomService.repairLegacyAgentTitles();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);

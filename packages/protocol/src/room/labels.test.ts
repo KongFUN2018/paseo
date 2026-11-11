@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  isLegacyRoomAgentTitle,
   legacyMemberLabel,
   roomMemberAgentTitle,
   roomMemberLabel,
@@ -49,5 +50,23 @@ describe("room member labels", () => {
   test("legacy ids pass through untouched", () => {
     expect(legacyMemberLabel("custom-id")).toBe("custom-id");
     expect(legacyMemberLabel("member-7")).toBe("Member 7");
+  });
+});
+
+describe("legacy title detection", () => {
+  test("recognises the titles older versions generated", () => {
+    expect(isLegacyRoomAgentTitle("Room member member_3 · 架构评审")).toBe(true);
+    expect(isLegacyRoomAgentTitle("Room member member-1")).toBe(true);
+    expect(isLegacyRoomAgentTitle("Room moderator · 架构评审")).toBe(true);
+    expect(isLegacyRoomAgentTitle("Room moderator")).toBe(true);
+  });
+
+  test("leaves current and hand-written titles alone", () => {
+    expect(isLegacyRoomAgentTitle("架构师 · 架构评审")).toBe(false);
+    expect(isLegacyRoomAgentTitle("主持人 · 架构评审")).toBe(false);
+    // A prefix alone must not be enough: this is a user rename.
+    expect(isLegacyRoomAgentTitle("Room member onboarding notes")).toBe(false);
+    expect(isLegacyRoomAgentTitle("Room moderator planning")).toBe(false);
+    expect(isLegacyRoomAgentTitle("")).toBe(false);
   });
 });
