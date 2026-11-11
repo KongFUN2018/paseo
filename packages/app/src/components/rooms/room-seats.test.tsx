@@ -197,4 +197,52 @@ describe("RoomSeats", () => {
     const label = view.getByTestId("room-seat-member_2").getAttribute("aria-label") ?? "";
     expect(label).toContain("Reading chat history");
   });
+
+  it("keeps the rail collapsed by default and floats the full card on toggle", () => {
+    const view = renderSeats(buildRoom());
+
+    // Collapsed: avatars only. The avatar glyph stays (that is the identity
+    // color cue), but the name and provider/model labels are gone.
+    expect(view.getByTestId("room-seats-root")).toBeTruthy();
+    expect(view.queryByTestId("room-seats-card")).toBeNull();
+    const collapsedSeat = view.getByTestId("room-seat-member_1");
+    expect(collapsedSeat.textContent).toBe("架");
+    expect(collapsedSeat.textContent).not.toContain("claude");
+
+    const toggle = view.getByTestId("room-seats-toggle");
+    act(() => {
+      toggle.click();
+    });
+
+    // Expanded: the floating card carries the labels over the transcript.
+    const card = view.getByTestId("room-seats-card");
+    expect(card).toBeTruthy();
+    expect(card.textContent).toContain("架构师");
+    // The rail itself is still there underneath.
+    expect(view.getByTestId("room-seat-member_1")).toBeTruthy();
+  });
+
+  it("closes the floating card from the backdrop or a second toggle", () => {
+    const view = renderSeats(buildRoom());
+    const toggle = view.getByTestId("room-seats-toggle");
+
+    act(() => {
+      toggle.click();
+    });
+    expect(view.queryByTestId("room-seats-card")).toBeTruthy();
+
+    act(() => {
+      view.getByTestId("room-seats-backdrop").click();
+    });
+    expect(view.queryByTestId("room-seats-card")).toBeNull();
+
+    act(() => {
+      toggle.click();
+    });
+    expect(view.queryByTestId("room-seats-card")).toBeTruthy();
+    act(() => {
+      toggle.click();
+    });
+    expect(view.queryByTestId("room-seats-card")).toBeNull();
+  });
 });

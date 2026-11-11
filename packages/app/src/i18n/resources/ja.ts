@@ -2940,6 +2940,7 @@ export const ja: TranslationResources = {
     sidebar: {
       title: "ルーム",
       newRoom: "新しいルーム",
+      archived: "アーカイブ ({{count}})",
       round: "第 {{round}} ラウンド",
       updated: "更新 {{time}}",
     },
@@ -2970,6 +2971,8 @@ export const ja: TranslationResources = {
       toolCalls_other: "ツール呼び出し {{count}} 回",
     },
     seat: {
+      expandSeats: "すべての席を表示",
+      collapseSeats: "席の詳細を隠す",
       pending: "待機中",
       ready: "準備完了",
       speaking: "発言中",
@@ -3003,6 +3006,7 @@ export const ja: TranslationResources = {
     closing: {
       title: "要約",
       artifactPath: "要約は {{path}} に書き込まれます",
+      continueHint: "議論を続けるには、下で発言を送信してください。",
     },
     interrupted: {
       title: "討論が中断されました",

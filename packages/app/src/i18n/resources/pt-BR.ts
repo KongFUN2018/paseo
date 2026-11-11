@@ -2953,6 +2953,7 @@ export const ptBR: TranslationResources = {
     sidebar: {
       title: "Salas",
       newRoom: "Nova sala",
+      archived: "Arquivadas ({{count}})",
       round: "Rodada {{round}}",
       updated: "Atualizada {{time}}",
     },
@@ -2983,6 +2984,8 @@ export const ptBR: TranslationResources = {
       toolCalls_other: "{{count}} chamadas de ferramenta",
     },
     seat: {
+      expandSeats: "Mostrar todos os assentos",
+      collapseSeats: "Ocultar detalhes",
       pending: "Pendente",
       ready: "Pronto",
       speaking: "Falando",
@@ -3016,6 +3019,7 @@ export const ptBR: TranslationResources = {
     closing: {
       title: "Resumo",
       artifactPath: "O resumo será gravado em {{path}}",
+      continueHint: "Para continuar a discussão, envie um comentário abaixo.",
     },
     interrupted: {
       title: "Discussão interrompida",

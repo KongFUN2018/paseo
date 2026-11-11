@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import Animated, {
   Easing,
@@ -20,6 +20,7 @@ import {
 import { ROOM_AVATAR_FILL, roomNameStyle } from "@/components/rooms/room-identity-styles";
 import { useRoomStreamEntries, type RoomStreamEntry } from "@/rooms/room-stream-store";
 import { deriveIdentityColorName, type IdentityColorName } from "@/styles/identity-colors";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { StyleSheet as RNStyleSheet } from "react-native";
 
 /** Visual bucket of a seat: drives the ring, the halo and the status color. */
@@ -103,9 +104,13 @@ function seatPresentation(
 const BREATH_DURATION_MS = 800;
 const SEAT_AVATAR_SIZE = 34;
 const MODERATOR_AVATAR_SIZE = 28;
+/** Collapsed rail: smaller avatars so the strip stays ~44px tall. */
+const COMPACT_AVATAR_SIZE = 24;
+/** The active speaker's avatar in the rail, so the speaker stands out. */
+const COMPACT_SPEAKING_AVATAR_SIZE = 30;
 
 /** Breathing halo around the active speaker's avatar (prototype `pulse`). */
-const SpeakingHalo = memo(function SpeakingHalo() {
+const SpeakingHalo = memo(function SpeakingHalo({ compact = false }: { compact?: boolean }) {
   const progress = useSharedValue(1);
   useEffect(() => {
     progress.value = withRepeat(
@@ -124,7 +129,10 @@ const SpeakingHalo = memo(function SpeakingHalo() {
   // Reanimated owns the wrapper's plain styles; the theme-colored ring lives on
   // an inner View so Unistyles and Reanimated never patch the same node.
   return (
-    <Animated.View pointerEvents="none" style={[haloStyles.position, animated]}>
+    <Animated.View
+      pointerEvents="none"
+      style={[compact ? haloStyles.positionCompact : haloStyles.position, animated]}
+    >
       <View style={styles.haloRing} />
     </Animated.View>
   );
@@ -144,6 +152,12 @@ interface RoomSeatProps {
   onOpenAgent: (agentId: string) => void;
   moderator?: boolean;
   testID: string;
+  /**
+   * Collapsed rail mode: avatar only. The rail has to stay short so it stops
+   * eating vertical space from the transcript; the labels come back when the
+   * rail is expanded into the floating card.
+   */
+  compact?: boolean;
 }
 
 /** Resolved at render so the Unistyles proxy stays lazy (never materialize at module scope). */
@@ -162,6 +176,18 @@ function seatStatusStyle(visual: SeatVisual) {
   }
 }
 
+/** Avatar box for a seat; the compact rail grows the active speaker. */
+function avatarWrapStyle(compact: boolean, isSpeaking: boolean) {
+  if (!compact) return styles.avatarWrap;
+  return isSpeaking ? styles.avatarWrapCompactSpeaking : styles.avatarWrapCompact;
+}
+
+/** Avatar circle matching the wrapper above. */
+function avatarStyle(compact: boolean, isSpeaking: boolean) {
+  if (!compact) return styles.avatar;
+  return isSpeaking ? styles.avatarCompactSpeaking : styles.avatarCompact;
+}
+
 const RoomSeat = memo(function RoomSeat({
   name,
   avatarChar,
@@ -175,6 +201,7 @@ const RoomSeat = memo(function RoomSeat({
   onOpenAgent,
   moderator = false,
   testID,
+  compact = false,
 }: RoomSeatProps) {
   const { t } = useTranslation();
   const handlePress = useCallback(() => {
@@ -186,18 +213,18 @@ const RoomSeat = memo(function RoomSeat({
   const accessibilityLabel = [name, statusText, turnsSpoken].filter(Boolean).join(", ");
   return (
     <PressHighlight
-      style={[styles.seat, isSpeaking ? styles.seatSpeaking : null]}
+      style={[compact ? styles.seatCompact : styles.seat, isSpeaking ? styles.seatSpeaking : null]}
       onPress={agentId ? handlePress : undefined}
       disabled={!agentId}
       accessibilityLabel={accessibilityLabel}
       testID={testID}
     >
-      <View style={styles.avatarWrap}>
-        {isSpeaking ? <SpeakingHalo /> : null}
+      <View style={avatarWrapStyle(compact, isSpeaking)}>
+        {isSpeaking ? <SpeakingHalo compact={compact} /> : null}
         {statusVisual === "researching" ? <View style={styles.researchRing} /> : null}
         <View
           style={[
-            styles.avatar,
+            avatarStyle(compact, isSpeaking),
             moderator ? styles.avatarModerator : null,
             colorName ? ROOM_AVATAR_FILL[colorName] : null,
           ]}
@@ -207,48 +234,62 @@ const RoomSeat = memo(function RoomSeat({
           </Text>
         </View>
       </View>
-      {colorName ? (
-        <Text
-          style={[roomNameStyle(colorName), isSpeaking ? styles.seatNameSpeaking : null]}
-          numberOfLines={1}
-        >
-          {name}
-        </Text>
-      ) : (
-        <Text style={[styles.seatName, styles.seatNameMuted]} numberOfLines={1}>
-          {name}
-        </Text>
+      {compact ? null : (
+        <>
+          {colorName ? (
+            <Text
+              style={[roomNameStyle(colorName), isSpeaking ? styles.seatNameSpeaking : null]}
+              numberOfLines={1}
+            >
+              {name}
+            </Text>
+          ) : (
+            <Text style={[styles.seatName, styles.seatNameMuted]} numberOfLines={1}>
+              {name}
+            </Text>
+          )}
+          {providerModel ? (
+            <Text style={styles.seatMeta} numberOfLines={1}>
+              {providerModel}
+            </Text>
+          ) : null}
+          {statusText ? (
+            <Text style={[styles.seatStatus, seatStatusStyle(statusVisual)]} numberOfLines={1}>
+              {statusText}
+            </Text>
+          ) : null}
+        </>
       )}
-      {providerModel ? (
-        <Text style={styles.seatMeta} numberOfLines={1}>
-          {providerModel}
-        </Text>
-      ) : null}
-      {statusText ? (
-        <Text style={[styles.seatStatus, seatStatusStyle(statusVisual)]} numberOfLines={1}>
-          {statusText}
-        </Text>
-      ) : null}
     </PressHighlight>
   );
 });
 
-function AddSeat({ onPress, label }: { onPress: () => void; label: string }) {
+function AddSeat({
+  onPress,
+  label,
+  compact = false,
+}: {
+  onPress: () => void;
+  label: string;
+  compact?: boolean;
+}) {
   return (
     <PressHighlight
-      style={styles.seat}
+      style={compact ? styles.seatCompact : styles.seat}
       onPress={onPress}
       accessibilityLabel={label}
-      testID="room-seat-add"
+      testID={compact ? "room-seat-add" : "room-seat-card-add"}
     >
-      <View style={styles.avatarWrap}>
-        <View style={styles.addSeat}>
+      <View style={compact ? styles.avatarWrapCompact : styles.avatarWrap}>
+        <View style={compact ? styles.addSeatCompact : styles.addSeat}>
           <Text style={styles.addSeatChar}>＋</Text>
         </View>
       </View>
-      <Text style={[styles.seatName, styles.seatNameMuted]} numberOfLines={1}>
-        {label}
-      </Text>
+      {compact ? null : (
+        <Text style={[styles.seatName, styles.seatNameMuted]} numberOfLines={1}>
+          {label}
+        </Text>
+      )}
     </PressHighlight>
   );
 }
@@ -267,6 +308,26 @@ export function RoomSeats({
   const { t } = useTranslation();
   const streams = useRoomStreamEntries(serverId, room.id);
   const seatsScrollBoundary = useHorizontalScrollBoundary();
+  const isCompactFormFactor = useIsCompactFormFactor();
+  // The rail is the default: it keeps the speaker visible without spending a
+  // quarter of the pane on labels. Expanding floats the full card over the
+  // transcript instead of pushing it down, so reading never jumps.
+  const [expanded, setExpanded] = useState(false);
+  const toggleExpanded = useCallback(() => {
+    setExpanded((value) => !value);
+  }, []);
+  const collapse = useCallback(() => {
+    setExpanded(false);
+  }, []);
+  // Hover is a desktop nicety; touch devices have no hover state, so they rely
+  // on the tap toggle only (and the rail never auto-hides there).
+  const [hovered, setHovered] = useState(false);
+  const handleHoverIn = useCallback(() => setHovered(true), []);
+  const handleHoverOut = useCallback(() => setHovered(false), []);
+  const hoverOpen = !isCompactFormFactor && hovered;
+  const showFull = expanded || hoverOpen;
+  const accessibilityState = useMemo(() => ({ expanded: showFull }), [showFull]);
+
   // v1 rooms reject mid-room joins server-side (§7.2.1 third patch); hiding
   // the entry is guidance, the rpc_error stays authoritative.
   const canAddMember =
@@ -274,38 +335,26 @@ export function RoomSeats({
     room.members.length < 6 &&
     room.promptVersion >= 2;
 
-  const moderatorSeat = useMemo(
-    () => (
-      <RoomSeat
-        name={t("rooms.seat.moderator")}
-        avatarChar={t("rooms.seat.moderatorShort")}
-        colorName={null}
-        providerModel={roomProviderModelLabel(room.moderator.provider, room.moderator.model)}
-        statusText={t("rooms.seat.moderatorRole")}
-        statusVisual="idle"
-        isSpeaking={false}
-        turnCount={null}
-        agentId={room.moderator.agentId}
-        onOpenAgent={onOpenAgent}
-        moderator
-        testID="room-seat-moderator"
-      />
-    ),
-    [onOpenAgent, room.moderator.agentId, room.moderator.model, room.moderator.provider, t],
+  const moderatorSeat = (compact: boolean) => (
+    <RoomSeat
+      name={t("rooms.seat.moderator")}
+      avatarChar={t("rooms.seat.moderatorShort")}
+      colorName={null}
+      providerModel={roomProviderModelLabel(room.moderator.provider, room.moderator.model)}
+      statusText={t("rooms.seat.moderatorRole")}
+      statusVisual="idle"
+      isSpeaking={false}
+      turnCount={null}
+      agentId={room.moderator.agentId}
+      onOpenAgent={onOpenAgent}
+      moderator
+      testID={compact ? "room-seat-moderator" : "room-seat-card-moderator"}
+      compact={compact}
+    />
   );
 
-  return (
-    <Animated.ScrollView
-      horizontal
-      testID="room-seats"
-      style={styles.container}
-      contentContainerStyle={styles.containerContent}
-      showsHorizontalScrollIndicator={false}
-      onLayout={seatsScrollBoundary.onLayout}
-      onContentSizeChange={seatsScrollBoundary.onContentSizeChange}
-      onScroll={seatsScrollBoundary.onScroll}
-      scrollEventThrottle={16}
-    >
+  const renderSeats = (compact: boolean) => (
+    <>
       {room.members.map((member) => {
         const presentation = seatPresentation(member, room, streams[member.id], t);
         return (
@@ -321,13 +370,66 @@ export function RoomSeats({
             turnCount={member.turnCount}
             agentId={member.agentId}
             onOpenAgent={onOpenAgent}
-            testID={`room-seat-${member.id}`}
+            testID={compact ? `room-seat-${member.id}` : `room-seat-card-${member.id}`}
+            compact={compact}
           />
         );
       })}
-      {moderatorSeat}
-      {canAddMember ? <AddSeat onPress={onAddMember} label={t("rooms.seat.invite")} /> : null}
+      {moderatorSeat(compact)}
+      {canAddMember ? (
+        <AddSeat onPress={onAddMember} label={t("rooms.seat.invite")} compact={compact} />
+      ) : null}
+    </>
+  );
+
+  const rail = (
+    <Animated.ScrollView
+      horizontal
+      testID="room-seats"
+      style={styles.rail}
+      contentContainerStyle={styles.railContent}
+      showsHorizontalScrollIndicator={false}
+      onLayout={seatsScrollBoundary.onLayout}
+      onContentSizeChange={seatsScrollBoundary.onContentSizeChange}
+      onScroll={seatsScrollBoundary.onScroll}
+      scrollEventThrottle={16}
+    >
+      {renderSeats(true)}
     </Animated.ScrollView>
+  );
+
+  return (
+    <View style={styles.root} testID="room-seats-root">
+      <PressHighlight
+        onPress={toggleExpanded}
+        accessibilityLabel={t(showFull ? "rooms.seat.collapseSeats" : "rooms.seat.expandSeats")}
+        accessibilityState={accessibilityState}
+        testID="room-seats-toggle"
+        onHoverIn={handleHoverIn}
+        onHoverOut={handleHoverOut}
+      >
+        {rail}
+      </PressHighlight>
+      {showFull ? (
+        <>
+          {/* Tap outside closes the floating card. */}
+          <PressHighlight
+            style={styles.backdrop}
+            onPress={collapse}
+            accessibilityLabel={t("rooms.seat.collapseSeats")}
+            testID="room-seats-backdrop"
+          />
+          <View
+            style={styles.card}
+            testID="room-seats-card"
+            onPointerEnter={handleHoverIn}
+            onPointerLeave={handleHoverOut}
+          >
+            <View style={styles.cardContent}>{renderSeats(false)}</View>
+          </View>{" "}
+        </>
+      ) : null}
+    </View>
   );
 }
 
@@ -341,24 +443,68 @@ const haloStyles = RNStyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  positionCompact: {
+    position: "absolute",
+    width: COMPACT_AVATAR_SIZE + 6,
+    height: COMPACT_AVATAR_SIZE + 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });
 
 const styles = StyleSheet.create((theme) => ({
-  container: {
+  root: {
+    position: "relative",
+    zIndex: 10,
+  },
+  // Collapsed rail: one short row pinned above the transcript.
+  rail: {
     flexGrow: 0,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  // Inner row: seats stay on one line and overflow scrolls horizontally.
-  containerContent: {
+  railContent: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "center",
     flexGrow: 1,
     flexWrap: "nowrap",
-    columnGap: theme.spacing[6],
+    columnGap: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+  },
+  // Floating card: overlays the transcript instead of pushing it down, so
+  // text under the reader never shifts when the card opens.
+  card: {
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    right: 0,
+    backgroundColor: theme.colors.surface2,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: theme.borderRadius.lg,
+    borderBottomRightRadius: theme.borderRadius.lg,
     paddingVertical: theme.spacing[3],
     paddingHorizontal: theme.spacing[2],
+  },
+  cardContent: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    flexWrap: "nowrap",
+    columnGap: theme.spacing[6],
+  },
+  // Catches the tap that dismisses the card; transparent so the transcript
+  // stays readable underneath.
+  backdrop: {
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    right: 0,
+    height: 2000,
+    backgroundColor: "transparent",
   },
   seat: {
     alignItems: "center",
@@ -367,6 +513,44 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 44,
     paddingVertical: theme.spacing[1],
     borderRadius: theme.borderRadius.md,
+  },
+  // Rail mode: avatar-only, short, and wide enough to stay a comfortable
+  // touch target without the label.
+  seatCompact: {
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
+  },
+  avatarWrapCompact: {
+    width: COMPACT_AVATAR_SIZE,
+    height: COMPACT_AVATAR_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // The active speaker grows in the rail so the current voice stays findable
+  // even though labels are hidden.
+  avatarWrapCompactSpeaking: {
+    width: COMPACT_SPEAKING_AVATAR_SIZE,
+    height: COMPACT_SPEAKING_AVATAR_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarCompactSpeaking: {
+    width: COMPACT_SPEAKING_AVATAR_SIZE,
+    height: COMPACT_SPEAKING_AVATAR_SIZE,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarCompact: {
+    width: COMPACT_AVATAR_SIZE,
+    height: COMPACT_AVATAR_SIZE,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
   },
   seatSpeaking: {
     transform: [{ translateY: -2 }],
@@ -417,6 +601,16 @@ const styles = StyleSheet.create((theme) => ({
   addSeat: {
     width: SEAT_AVATAR_SIZE,
     height: SEAT_AVATAR_SIZE,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: theme.colors.surface4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addSeatCompact: {
+    width: COMPACT_AVATAR_SIZE,
+    height: COMPACT_AVATAR_SIZE,
     borderRadius: theme.borderRadius.full,
     borderWidth: 1,
     borderStyle: "dashed",

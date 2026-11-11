@@ -2946,6 +2946,7 @@ export const ar: TranslationResources = {
     sidebar: {
       title: "الغرف",
       newRoom: "غرفة جديدة",
+      archived: "المؤرشفة ({{count}})",
       round: "الجولة {{round}}",
       updated: "آخر تحديث {{time}}",
     },
@@ -2976,6 +2977,8 @@ export const ar: TranslationResources = {
       toolCalls_other: "{{count}} استدعاءات أداة",
     },
     seat: {
+      expandSeats: "عرض كل المقاعد",
+      collapseSeats: "إخفاء تفاصيل المقاعد",
       pending: "بالانتظار",
       ready: "جاهز",
       speaking: "يتحدث",
@@ -3009,6 +3012,7 @@ export const ar: TranslationResources = {
     closing: {
       title: "الملخص",
       artifactPath: "سيُكتب الملخص في {{path}}",
+      continueHint: "لمتابعة النقاش، أرسل تعليقاً أدناه.",
     },
     interrupted: {
       title: "النقاش متعطل",

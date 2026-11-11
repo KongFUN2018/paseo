@@ -2876,6 +2876,7 @@ export const zhCN: TranslationResources = {
     sidebar: {
       title: "房间",
       newRoom: "新建房间",
+      archived: "已归档 ({{count}})",
       round: "第 {{round}} 轮",
       updated: "更新于 {{time}}",
     },
@@ -2906,6 +2907,8 @@ export const zhCN: TranslationResources = {
       toolCalls_other: "{{count}} 次工具调用",
     },
     seat: {
+      expandSeats: "展开座位信息",
+      collapseSeats: "收起座位信息",
       pending: "待就绪",
       ready: "就绪",
       speaking: "发言中",
@@ -2939,6 +2942,7 @@ export const zhCN: TranslationResources = {
     closing: {
       title: "摘要",
       artifactPath: "摘要将写入 {{path}}",
+      continueHint: "要继续讨论，请在下方发送一条插话。",
     },
     interrupted: {
       title: "讨论已中断",

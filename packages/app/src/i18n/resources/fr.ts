@@ -2981,6 +2981,7 @@ export const fr: TranslationResources = {
     sidebar: {
       title: "Salons",
       newRoom: "Nouveau salon",
+      archived: "Archivés ({{count}})",
       round: "Tour {{round}}",
       updated: "Mis à jour {{time}}",
     },
@@ -3011,6 +3012,8 @@ export const fr: TranslationResources = {
       toolCalls_other: "{{count}} appels d'outils",
     },
     seat: {
+      expandSeats: "Afficher tous les sièges",
+      collapseSeats: "Masquer les détails",
       pending: "En attente",
       ready: "Prêt",
       speaking: "Parle",
@@ -3044,6 +3047,7 @@ export const fr: TranslationResources = {
     closing: {
       title: "Résumé",
       artifactPath: "Le résumé sera écrit dans {{path}}",
+      continueHint: "Pour poursuivre la discussion, envoyez une intervention ci-dessous.",
     },
     interrupted: {
       title: "Discussion interrompue",

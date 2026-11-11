@@ -2971,6 +2971,7 @@ export const es: TranslationResources = {
     sidebar: {
       title: "Salas",
       newRoom: "Nueva sala",
+      archived: "Archivadas ({{count}})",
       round: "Ronda {{round}}",
       updated: "Actualizada {{time}}",
     },
@@ -3001,6 +3002,8 @@ export const es: TranslationResources = {
       toolCalls_other: "{{count}} llamadas a herramientas",
     },
     seat: {
+      expandSeats: "Mostrar todos los asientos",
+      collapseSeats: "Ocultar detalles",
       pending: "Pendiente",
       ready: "Listo",
       speaking: "Hablando",
@@ -3034,6 +3037,7 @@ export const es: TranslationResources = {
     closing: {
       title: "Resumen",
       artifactPath: "El resumen se escribirá en {{path}}",
+      continueHint: "Para seguir debatiendo, envía un comentario abajo.",
     },
     interrupted: {
       title: "Debate interrumpido",

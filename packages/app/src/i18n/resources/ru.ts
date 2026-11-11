@@ -2964,6 +2964,7 @@ export const ru: TranslationResources = {
     sidebar: {
       title: "Комнаты",
       newRoom: "Новая комната",
+      archived: "Архив ({{count}})",
       round: "Раунд {{round}}",
       updated: "Обновлено {{time}}",
     },
@@ -2994,6 +2995,8 @@ export const ru: TranslationResources = {
       toolCalls_other: "{{count}} вызовов инструмента",
     },
     seat: {
+      expandSeats: "Показать все места",
+      collapseSeats: "Скрыть детали",
       pending: "Ожидает",
       ready: "Готов",
       speaking: "Выступает",
@@ -3027,6 +3030,7 @@ export const ru: TranslationResources = {
     closing: {
       title: "Итог",
       artifactPath: "Итог будет записан в {{path}}",
+      continueHint: "Чтобы продолжить обсуждение, отправьте реплику ниже.",
     },
     interrupted: {
       title: "Обсуждение прервано",

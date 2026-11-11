@@ -2925,6 +2925,7 @@ export const ko: TranslationResources = {
     sidebar: {
       title: "룸",
       newRoom: "새 룸",
+      archived: "보관됨 ({{count}})",
       round: "{{round}}번째 라운드",
       updated: "업데이트 {{time}}",
     },
@@ -2955,6 +2956,8 @@ export const ko: TranslationResources = {
       toolCalls_other: "도구 호출 {{count}}회",
     },
     seat: {
+      expandSeats: "모든 자리 보기",
+      collapseSeats: "자리 상세 숨기기",
       pending: "대기 중",
       ready: "준비됨",
       speaking: "발언 중",
@@ -2988,6 +2991,7 @@ export const ko: TranslationResources = {
     closing: {
       title: "요약",
       artifactPath: "요약은 {{path}}에 기록됩니다",
+      continueHint: "토론을 계속하려면 아래에서 발언을 보내세요.",
     },
     interrupted: {
       title: "토론이 중단되었습니다",

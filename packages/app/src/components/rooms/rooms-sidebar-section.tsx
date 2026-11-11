@@ -34,6 +34,17 @@ export function RoomsSidebarSection() {
   const [formEpoch, setFormEpoch] = useState(0);
   const { rooms } = useRooms(supportsRooms ? serverId : null);
 
+  // Closed rooms keep their history and stay reachable, but they no longer
+  // belong in the working list: they piled up between live rooms and made the
+  // section look like it could not be cleaned up. One collapsed group at the
+  // bottom keeps them one click away without crowding the list.
+  const [archiveCollapsed, setArchiveCollapsed] = useState(true);
+  const toggleArchive = useCallback(() => {
+    setArchiveCollapsed((collapsed) => !collapsed);
+  }, []);
+  const activeRooms = useMemo(() => rooms.filter((room) => room.status !== "closed"), [rooms]);
+  const archivedRooms = useMemo(() => rooms.filter((room) => room.status === "closed"), [rooms]);
+
   const openRoom = useCallback(
     (room: RoomSummary) => {
       if (!serverId) {
@@ -88,9 +99,24 @@ export function RoomsSidebarSection() {
           <Plus size={14} color={newRoomIconColor} />
         </PressHighlight>
       </SidebarSectionHeader>
-      {rooms.map((room) => (
+      {activeRooms.map((room) => (
         <RoomSummaryRow key={room.id} room={room} onPress={openRoom} />
       ))}
+      {archivedRooms.length > 0 ? (
+        <View testID="sidebar-rooms-archive">
+          <SidebarSectionHeader
+            title={t("rooms.sidebar.archived", { count: archivedRooms.length })}
+            collapsed={archiveCollapsed}
+            onToggle={toggleArchive}
+            testID="sidebar-rooms-archive-toggle"
+          />
+          {archiveCollapsed
+            ? null
+            : archivedRooms.map((room) => (
+                <RoomSummaryRow key={room.id} room={room} onPress={openRoom} />
+              ))}
+        </View>
+      ) : null}
       <RoomFormSheet
         key={formEpoch}
         visible={formOpen}

@@ -86,6 +86,12 @@ export const RoomInterjectionComposer = forwardRef<
 const styles = StyleSheet.create((theme) => ({
   container: {
     gap: theme.spacing[2],
+    // The panel spans the whole pane, so an unconstrained row hugs the left
+    // edge on wide screens. Cap the readable width and center it instead;
+    // on narrow screens the cap never binds and the row stays full-width.
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
   },
   inputRow: {
     flexDirection: "row",
@@ -94,5 +100,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   input: {
     flex: 1,
+    // A multiline field without a floor collapses to one short line; give it
+    // room to breathe while still growing with typed content.
+    minHeight: 44,
   },
 }));

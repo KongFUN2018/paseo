@@ -3039,6 +3039,7 @@ export const en = {
     sidebar: {
       title: "Rooms",
       newRoom: "New room",
+      archived: "Archived ({{count}})",
       round: "Round {{round}}",
       updated: "Updated {{time}}",
     },
@@ -3069,6 +3070,8 @@ export const en = {
       toolCalls_other: "{{count}} tool calls",
     },
     seat: {
+      expandSeats: "Show all seats",
+      collapseSeats: "Hide seat details",
       pending: "Pending",
       ready: "Ready",
       speaking: "Speaking",
@@ -3102,6 +3105,7 @@ export const en = {
     closing: {
       title: "Summary",
       artifactPath: "Summary will be written to {{path}}",
+      continueHint: "To keep discussing, send an interjection below.",
     },
     interrupted: {
       title: "Discussion interrupted",
