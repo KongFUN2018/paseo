@@ -9,6 +9,7 @@ import {
   type RoomRecord,
   type RoomSummary,
 } from "@getpaseo/protocol/room/types";
+import { roomMemberAgentTitle, roomModeratorAgentTitle } from "@getpaseo/protocol/room/labels";
 import { ROOM_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentSessionConfig, AgentTimelineItem } from "../agent/agent-sdk-types.js";
@@ -150,10 +151,10 @@ export class RoomService {
   }
 
   async create(input: CreateRoomInput): Promise<RoomRecord> {
-    // Mirror the wire schema's member cap (room.create min(2).max(4)); RPC
+    // Mirror the wire schema's member cap (room.create min(2).max(6)); RPC
     // requests are validated there, but direct service callers skip that layer.
-    if (input.members.length < 2 || input.members.length > 4) {
-      throw new Error(`Room requires 2 to 4 members, got ${input.members.length}`);
+    if (input.members.length < 2 || input.members.length > 6) {
+      throw new Error(`Room requires 2 to 6 members, got ${input.members.length}`);
     }
     const workspaceDirectory = await this.options.resolveWorkspaceDirectory(input.workspaceId);
     if (!workspaceDirectory) {
@@ -304,8 +305,8 @@ export class RoomService {
           `Room is ${record.status}; members can only join while discussing or interrupted`,
         );
       }
-      if (record.members.length >= 4) {
-        throw new Error(`Room already has ${record.members.length} members; the maximum is 4`);
+      if (record.members.length >= 6) {
+        throw new Error(`Room already has ${record.members.length} members; the maximum is 6`);
       }
       const workspaceDirectory = await this.options.resolveWorkspaceDirectory(record.workspaceId);
       if (!workspaceDirectory) {
@@ -344,7 +345,7 @@ export class RoomService {
         {
           workspaceId: record.workspaceId,
           labels: { [ROOM_ID_LABEL]: roomId },
-          initialTitle: `Room member ${memberId} · ${record.name}`,
+          initialTitle: roomMemberAgentTitle(draft, record.name),
         },
       );
       if (!agent.capabilities.supportsSessionPersistence) {
@@ -547,7 +548,7 @@ export class RoomService {
           {
             workspaceId: next.workspaceId,
             labels: { [ROOM_ID_LABEL]: next.id },
-            initialTitle: `Room moderator · ${next.name}`,
+            initialTitle: roomModeratorAgentTitle(next.name),
           },
         );
         createdAgentIds.push(agent.id);
@@ -572,7 +573,7 @@ export class RoomService {
           {
             workspaceId: next.workspaceId,
             labels: { [ROOM_ID_LABEL]: next.id },
-            initialTitle: `Room member ${member.id} · ${next.name}`,
+            initialTitle: roomMemberAgentTitle(member, next.name),
           },
         );
         createdAgentIds.push(agent.id);
@@ -624,7 +625,7 @@ export class RoomService {
       {
         workspaceId: record.workspaceId,
         labels: { [ROOM_ID_LABEL]: record.id },
-        initialTitle: `Room member ${member.id} · ${record.name}`,
+        initialTitle: roomMemberAgentTitle(member, record.name),
       },
     );
     if (!agent.capabilities.supportsSessionPersistence) {
@@ -709,6 +710,33 @@ export class RoomService {
     });
   }
 
+  /**
+   * Races a moderator run against the turn timeout (R8: an unresponsive
+   * provider used to block the room's pendingCheckpoint forever). A hung run
+   * is cancelled so the agent's active-run slot frees for the next checkpoint;
+   * the timeout rejection flows into the caller's deterministic fallback.
+   */
+  private async runModeratorAgent(
+    agentId: string,
+    prompt: string,
+    timeoutMs: number,
+  ): Promise<{ finalText: string }> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.options.agentManager.runAgent(agentId, prompt),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            void this.options.agentManager.cancelAgentRun(agentId).catch(() => undefined);
+            reject(new Error(`moderator run timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async runModerator(
     roomId: string,
     checkpoint: "opening" | "round_end" | "interjection" | "summary",
@@ -739,7 +767,11 @@ export class RoomService {
       }
       let text = "";
       try {
-        const result = await this.options.agentManager.runAgent(record.moderator.agentId, prompt);
+        const result = await this.runModeratorAgent(
+          record.moderator.agentId,
+          prompt,
+          record.limits.turnTimeoutMs,
+        );
         text = result.finalText;
       } catch (error) {
         this.options.logger.warn(
@@ -959,9 +991,10 @@ export class RoomService {
     const moderatorAgentId = record.moderator.agentId;
     if (!moderatorAgentId) return tail;
     try {
-      const result = await this.options.agentManager.runAgent(
+      const result = await this.runModeratorAgent(
         moderatorAgentId,
         buildCatchupSummaryPrompt(transcriptText),
+        record.limits.turnTimeoutMs,
       );
       const summary = result.finalText.trim();
       return summary.length > 0 ? `${summary}\n\n${tail}` : tail;

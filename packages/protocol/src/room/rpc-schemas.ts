@@ -33,7 +33,7 @@ export const RoomCreateRequestSchema = z.object({
   name: z.string().min(1),
   topic: z.string(),
   moderator: RoomModeratorInputSchema,
-  members: z.array(RoomMemberInputSchema).min(2).max(4),
+  members: z.array(RoomMemberInputSchema).min(2).max(6),
   artifactPath: z.string().min(1),
   limits: RoomLimitsInputSchema.optional(),
 });

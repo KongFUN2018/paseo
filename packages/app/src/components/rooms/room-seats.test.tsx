@@ -10,12 +10,19 @@ import { i18n } from "@/i18n/i18next";
 import { RoomSeats } from "./room-seats";
 
 vi.mock("react-native-reanimated", () => ({
-  default: { View: "div" },
+  default: {
+    View: "div",
+    // The seat row is an Animated.ScrollView; jsdom needs a plain host element.
+    ScrollView: "div",
+  },
   Easing: { ease: "ease", inOut: (value: unknown) => value },
   useAnimatedStyle: (factory: () => unknown) => factory(),
   useSharedValue: (initial: number) => ({ value: initial }),
   withRepeat: (value: unknown) => value,
   withTiming: (value: unknown) => value,
+  // The seat row scrolls horizontally; the boundary hook only reads offsets,
+  // so a no-op handler keeps the real component tree renderable.
+  useAnimatedScrollHandler: () => () => {},
 }));
 
 function buildRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
@@ -116,10 +123,24 @@ describe("RoomSeats", () => {
   });
 
   it("hides the add seat when the roster is full or the room is not joinable", () => {
-    const full = buildRoom();
-    full.members.push({ ...full.members[0], id: "member_3", agentId: "agent_3" });
-    full.members.push({ ...full.members[0], id: "member_4", agentId: "agent_4" });
+    const fillTo = (room: RoomRecord, total: number) => {
+      while (room.members.length < total) {
+        const index = room.members.length + 1;
+        room.members.push({ ...room.members[0], id: `member_${index}`, agentId: `agent_${index}` });
+      }
+      return room;
+    };
+
+    // Six is the cap: the invite seat disappears there, not at four.
+    const full = fillTo(buildRoom(), 6);
+    expect(full.members).toHaveLength(6);
     expect(renderSeats(full).queryByTestId("room-seat-add")).toBeNull();
+    cleanup();
+
+    // Five members still leave room for one more.
+    const nearlyFull = fillTo(buildRoom(), 5);
+    expect(renderSeats(nearlyFull).getByTestId("room-seat-add")).toBeTruthy();
+    cleanup();
 
     const forming = buildRoom({ status: "forming" });
     expect(renderSeats(forming).queryByTestId("room-seat-add")).toBeNull();

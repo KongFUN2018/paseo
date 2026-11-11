@@ -108,7 +108,7 @@ export interface RoomFormModel {
 }
 
 const MIN_MEMBERS = 2;
-const MAX_MEMBERS = 4;
+export const MAX_MEMBERS = 6;
 
 function defaultLimitsDraft(): RoomFormLimitsDraft {
   return {

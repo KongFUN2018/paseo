@@ -11,6 +11,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import type { RoomMember, RoomRecord } from "@getpaseo/protocol/room/types";
 import { PressHighlight } from "@/components/ui/press-highlight";
+import { useHorizontalScrollBoundary } from "@/components/ui/horizontal-scroll-boundary";
 import {
   roomMemberAvatarChar,
   roomMemberDisplayName,
@@ -265,11 +266,12 @@ export function RoomSeats({
 }) {
   const { t } = useTranslation();
   const streams = useRoomStreamEntries(serverId, room.id);
+  const seatsScrollBoundary = useHorizontalScrollBoundary();
   // v1 rooms reject mid-room joins server-side (§7.2.1 third patch); hiding
   // the entry is guidance, the rpc_error stays authoritative.
   const canAddMember =
     (room.status === "discussing" || room.status === "interrupted") &&
-    room.members.length < 4 &&
+    room.members.length < 6 &&
     room.promptVersion >= 2;
 
   const moderatorSeat = useMemo(
@@ -293,7 +295,17 @@ export function RoomSeats({
   );
 
   return (
-    <View style={styles.container} testID="room-seats">
+    <Animated.ScrollView
+      horizontal
+      testID="room-seats"
+      style={styles.container}
+      contentContainerStyle={styles.containerContent}
+      showsHorizontalScrollIndicator={false}
+      onLayout={seatsScrollBoundary.onLayout}
+      onContentSizeChange={seatsScrollBoundary.onContentSizeChange}
+      onScroll={seatsScrollBoundary.onScroll}
+      scrollEventThrottle={16}
+    >
       {room.members.map((member) => {
         const presentation = seatPresentation(member, room, streams[member.id], t);
         return (
@@ -315,7 +327,7 @@ export function RoomSeats({
       })}
       {moderatorSeat}
       {canAddMember ? <AddSeat onPress={onAddMember} label={t("rooms.seat.invite")} /> : null}
-    </View>
+    </Animated.ScrollView>
   );
 }
 
@@ -333,16 +345,20 @@ const haloStyles = RNStyleSheet.create({
 
 const styles = StyleSheet.create((theme) => ({
   container: {
+    flexGrow: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  // Inner row: seats stay on one line and overflow scrolls horizontally.
+  containerContent: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "center",
-    flexWrap: "wrap",
+    flexGrow: 1,
+    flexWrap: "nowrap",
     columnGap: theme.spacing[6],
-    rowGap: theme.spacing[3],
     paddingVertical: theme.spacing[3],
     paddingHorizontal: theme.spacing[2],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
   },
   seat: {
     alignItems: "center",

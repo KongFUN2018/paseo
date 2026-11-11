@@ -13,12 +13,13 @@ import { i18n } from "@/i18n/i18next";
 import { RoomPanelContent } from "./room-panel-content";
 
 vi.mock("react-native-reanimated", () => ({
-  default: { View: "div" },
+  default: { View: "div", ScrollView: "div" },
   Easing: { ease: "ease", inOut: (value: unknown) => value },
   useAnimatedStyle: (factory: () => unknown) => factory(),
   useSharedValue: (initial: number) => ({ value: initial }),
   withRepeat: (value: unknown) => value,
   withTiming: (value: unknown) => value,
+  useAnimatedScrollHandler: () => () => {},
 }));
 
 vi.mock("react-native-keyboard-controller", () => ({

@@ -1,6 +1,8 @@
 # Build output
 dist/
 release/
+# Personal fork builds (electron-builder.fork.yml) land here
+release-fork*/
 
 # Dependencies
 node_modules/

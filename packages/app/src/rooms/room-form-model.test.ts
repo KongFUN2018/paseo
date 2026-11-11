@@ -79,16 +79,20 @@ describe("room form model", () => {
     expect(model.getState().artifactPath).toBe("docs/my-summary.md");
   });
 
-  it("clamps members between 2 and 4 rows", () => {
+  it("clamps members between 2 and 6 rows", () => {
     const model = openRoomForm();
     model.addMember();
     model.addMember();
-    expect(model.getState().members).toHaveLength(4);
     model.addMember();
-    expect(model.getState().members).toHaveLength(4);
+    model.addMember();
+    expect(model.getState().members).toHaveLength(6);
+    model.addMember();
+    expect(model.getState().members).toHaveLength(6);
 
-    model.removeMember(model.getState().members[0].rowId);
-    model.removeMember(model.getState().members[0].rowId);
+    // Remove down to the two-row floor, then prove the floor holds.
+    for (let index = 0; index < 4; index++) {
+      model.removeMember(model.getState().members[0].rowId);
+    }
     expect(model.getState().members).toHaveLength(2);
     model.removeMember(model.getState().members[0].rowId);
     expect(model.getState().members).toHaveLength(2);

@@ -294,9 +294,11 @@ describe("room member count", () => {
     expect(() => SessionInboundMessageSchema.parse(createRequest([member]))).toThrow();
   });
 
-  test("rejects a room with five members", () => {
+  test("rejects a room with seven members", () => {
     expect(() =>
-      SessionInboundMessageSchema.parse(createRequest([member, member, member, member, member])),
+      SessionInboundMessageSchema.parse(
+        createRequest([member, member, member, member, member, member, member]),
+      ),
     ).toThrow();
   });
 
@@ -307,6 +309,11 @@ describe("room member count", () => {
 
   test("accepts a room with four members", () => {
     const request = createRequest([member, member, member, member]);
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  });
+
+  test("accepts a room with six members", () => {
+    const request = createRequest([member, member, member, member, member, member]);
     expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
   });
 });

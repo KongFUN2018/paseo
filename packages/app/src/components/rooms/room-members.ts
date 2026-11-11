@@ -1,16 +1,20 @@
 import type { RoomMember } from "@getpaseo/protocol/room/types";
+import { roomMemberLabel } from "@getpaseo/protocol/room/labels";
 
 /**
  * Display name for a room member (design §4.3): the optional wire
- * `displayName` wins; legacy rooms fall back to the derived "Member N" label.
+ * `displayName` wins, then the role preset label, then the derived
+ * "Member N" label. Shares the precedence with the server so the seat, the
+ * feed and the agent session title never disagree.
  */
-export function roomMemberDisplayName(member: Pick<RoomMember, "id" | "displayName">): string {
-  const displayName = member.displayName?.trim();
-  return displayName ? displayName : memberLabel(member.id);
+export function roomMemberDisplayName(member: Pick<RoomMember, "id" | "displayName" | "roleId">): string {
+  return roomMemberLabel(member);
 }
 
 /** First grapheme of the display name, for the identity-color avatar. */
-export function roomMemberAvatarChar(member: Pick<RoomMember, "id" | "displayName">): string {
+export function roomMemberAvatarChar(
+  member: Pick<RoomMember, "id" | "displayName" | "roleId">,
+): string {
   return [...roomMemberDisplayName(member)][0] ?? "?";
 }
 
@@ -20,7 +24,4 @@ export function roomProviderModelLabel(provider: string, model: string | null): 
 }
 
 /** Legacy label for pre-refactor members without a displayName (design §4.3). */
-export function memberLabel(memberId: string): string {
-  const match = /^member[_-](\d+)$/.exec(memberId);
-  return match ? `Member ${match[1]}` : memberId;
-}
+export { legacyMemberLabel as memberLabel } from "@getpaseo/protocol/room/labels";

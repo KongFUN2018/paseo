@@ -690,11 +690,11 @@ describe("RoomService with a scripted provider", () => {
     expect(ok.id).toMatch(/^room_[0-9a-f]{8}$/);
   });
 
-  test("rejects member counts outside 2-4 even when called directly", async () => {
+  test("rejects member counts outside 2-6 even when called directly", async () => {
     const { service } = await buildService(null);
     const base = createInput();
     await expect(service.create({ ...base, members: [base.members[0]] })).rejects.toThrow(
-      /2 to 4 members, got 1/,
+      /2 to 6 members, got 1/,
     );
     await expect(
       service.create({
@@ -703,14 +703,22 @@ describe("RoomService with a scripted provider", () => {
           ...base.members,
           { provider: "codex", persona: "性能" },
           { provider: "codex", persona: "安全" },
+          { provider: "codex", persona: "数据" },
+          { provider: "codex", persona: "测试" },
         ],
       }),
-    ).rejects.toThrow(/2 to 4 members, got 5/);
-    const ok = await service.create({
+    ).rejects.toThrow(/2 to 6 members, got 7/);
+    // A full six-member room is accepted now that the cap moved up.
+    const maxed = await service.create({
       ...base,
-      members: base.members.slice(0, 2),
+      members: [
+        ...base.members,
+        { provider: "codex", persona: "性能" },
+        { provider: "codex", persona: "安全" },
+        { provider: "codex", persona: "数据" },
+      ],
     });
-    expect(ok.members).toHaveLength(2);
+    expect(maxed.members).toHaveLength(6);
   });
 
   test("a failed artifact write keeps the room closing and surfaces the error", async () => {
@@ -815,7 +823,7 @@ describe("RoomService with a scripted provider", () => {
     );
   });
 
-  test("adds members mid-discussion up to four and rejects the fifth", async () => {
+  test("adds members mid-discussion up to six and rejects the seventh", async () => {
     const { service, client } = await buildService(null);
     const room = await service.create(createInput());
     await service.start(room.id);
@@ -844,9 +852,13 @@ describe("RoomService with a scripted provider", () => {
     expect(joined.transcript.at(-1)?.text).toContain("成员 性能");
     expect(joined.round.remainingMemberIds).toContain("member_4");
 
+    // Fill the roster to the six-member cap, then prove the seventh is refused.
+    await service.addMember(room.id, { provider: "codex", persona: "安全" });
+    const filled = await service.addMember(room.id, { provider: "codex", persona: "数据" });
+    expect(filled.members).toHaveLength(6);
     await expect(
-      service.addMember(room.id, { provider: "codex", persona: "第五人" }),
-    ).rejects.toThrow(/maximum is 4/);
+      service.addMember(room.id, { provider: "codex", persona: "第七人" }),
+    ).rejects.toThrow(/maximum is 6/);
 
     const closing = await waitForRoom(
       service,
@@ -857,8 +869,8 @@ describe("RoomService with a scripted provider", () => {
     // depends on when the join is applied relative to the scripted rotation).
     expect(closing.members[3]?.turnCount).toBeGreaterThanOrEqual(1);
     expect(closing.members[3]?.catchUpPending).toBeFalsy();
-    // Moderator + 3 initial members + exactly one probe agent for the joiner.
-    expect(client.configs).toHaveLength(5);
+    // Moderator + 3 initial members + exactly one probe agent per joiner (3).
+    expect(client.configs).toHaveLength(7);
   });
 
   test("a joiner without session persistence is rejected before touching the roster", async () => {
@@ -1279,5 +1291,43 @@ describe("RoomService with a scripted provider", () => {
     const bindings = (service as unknown as { checkpointRunIds: Map<string, string> })
       .checkpointRunIds;
     expect(bindings.size).toBe(0);
+  });
+
+  test("a hung moderator checkpoint times out and the room keeps rotating (R8)", async () => {
+    // The round_end moderator run hangs forever on the gate; the timeout must
+    // break the deadlock via the deterministic fallback (continue) instead of
+    // leaving the room stuck on pendingCheckpoint with an idle turn.
+    const holdCheckpoint = deferred<void>(); // never resolved
+    const { service } = await buildService(null, { holdCheckpoint });
+    const base = createInput();
+    const room = await service.create({
+      ...base,
+      members: base.members.slice(0, 2),
+      limits: { turnTimeoutMs: 300, maxRounds: 2, maxTurns: 12 },
+    });
+    await service.start(room.id);
+
+    // Opening is not a checkpoint prompt, so it passes; round 1 completes and
+    // the round_end checkpoint run then hangs on the gate.
+    await waitForRoom(service, room.id, hasTwoMemberEntries);
+
+    // The timeout fires (~300ms) and the fallback continues into round 2
+    // instead of blocking the room forever.
+    await waitForRoom(service, room.id, (current) =>
+      current.transcript.some((entry) => entry.kind === "system" && entry.text === "round:2"),
+    );
+
+    // Round 2's checkpoint hang times out the same way; the budget exhausts
+    // and the room still reaches a proper closing with a summary — the full
+    // lifecycle survives a permanently unresponsive moderator run.
+    const closing = await waitForRoom(
+      service,
+      room.id,
+      (current) => current.status === "closing" && current.summary !== null,
+    );
+    expect(
+      closing.transcript.some((entry) => entry.kind === "moderator" && entry.text === "## 最终结论"),
+    ).toBe(true);
+    expect(closing.members.map((member) => member.status)).not.toContain("failed");
   });
 });

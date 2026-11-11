@@ -35,6 +35,7 @@ import type {
   RoomFormState,
   RoomMemberRowValidation,
 } from "@/rooms/room-form-model";
+import { MAX_MEMBERS } from "@/rooms/room-form-model";
 import { toErrorMessage } from "@/utils/error-messages";
 
 export interface RoomFormSheetProps {
@@ -229,7 +230,7 @@ function RoomMemberList({
           size={size}
         />
       ))}
-      {state.members.length < 4 ? (
+      {state.members.length < MAX_MEMBERS ? (
         <Button
           variant="ghost"
           size="sm"
